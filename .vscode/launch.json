@@ -25,7 +25,8 @@
             "deviceCore": "Cortex-M55",
             "deviceTrustzone": "Secure-only",
             "gdb": "/opt/ST/STM32CubeCLT_1.22.0/GNU-tools-for-STM32/bin/arm-none-eabi-gdb",
-            "serverExe": "/opt/ST/STM32CubeCLT_1.22.0/STLink-gdb-server/bin/ST-LINK_gdbserver",
+            "serverExe": "ST-LINK_gdbserver",
+            "serverCwd": "/opt/ST/STM32CubeCLT_1.22.0/STLink-gdb-server/bin",
             "serverCubeProgPath": "/opt/ST/STM32CubeCLT_1.22.0/STM32CubeProgrammer/bin"
         }
     ]
