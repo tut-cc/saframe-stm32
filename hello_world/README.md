@@ -77,6 +77,7 @@ ST-LINK_gdbserver を SWD 1 MHz で起動し、gdb が Appli.elf、FSBL.elf の�
 
 ### macOS での注意 (ST-LINK V3、macOS 26 で確認)
 
+- **USB ポートで結果が変わります。** この Mac では左側の USB-C ポート (`/dev/cu.usbmodem1102` として見える側) では安定し、右側 (`usbmodem3102`) では列挙だけで libusb の `pipe is stalled` が出ました。stall が続くときはまずポートを変えてください。
 - SWD を自動 (最大) 周波数にすると、数十 KB の転送中に libusb の `pipe is stalled` で ST-LINK が固まります。固まった後は **USB ケーブルの抜き挿し** が必要です。1000 kHz と 1 KiB パケットで安定します。
 - `stty -f` で設定したボーレートはデバイスを閉じた時点で破棄されます。次に `cat` で開くと 9600 bps になり、ST-LINK はその line coding を UART に反映して全バイトを捨てます。`tools/vcp_read.py` は同じディスクリプタで 115200 に設定してから読みます (`screen` / `minicom` でも可)。
 - gdb の転送中に VCP を読み続けると、同じ USB デバイス上の SWD 転送が 10 倍遅くなるか停止します。`devboot_run.sh` は転送完了後にリーダを開きます。
