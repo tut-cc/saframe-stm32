@@ -20,6 +20,7 @@
             ],
             "runEntry": "usermain",
             "serverApID": "1",
+            "serverShared": true,
             "serverInterfaceFrequency": "1000",
             "deviceName": "STM32N657X0H3Q",
             "deviceCore": "Cortex-M55",

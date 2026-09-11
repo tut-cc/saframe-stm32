@@ -15,7 +15,10 @@ VCP=${VCP:-$(ls /dev/cu.usbmodem* 2>/dev/null | head -1)}
 [ -n "$VCP" ] || { echo "no /dev/cu.usbmodem* found" >&2; exit 1; }
 APPLI=$BUILD/saframe_hello_world_Appli.elf
 FSBL=$BUILD/saframe_hello_world_FSBL.elf
-"$CLT/STLink-gdb-server/bin/ST-LINK_gdbserver" -e -k -d -m 1 -p 61234 --frequency 1000 \
+# -t (shared mode) when the VSCode ST extension's stlink-server daemon holds the probe;
+# without it the exclusive open fails with "Target USB comms error".
+SHARED=""; pgrep -x stlink-server > /dev/null 2>&1 && SHARED="-t"
+"$CLT/STLink-gdb-server/bin/ST-LINK_gdbserver" -e -k -d -m 1 -p 61234 --frequency 1000 $SHARED \
   -cp "$CLT/STM32CubeProgrammer/bin" > "$BUILD/gdbserver.log" 2>&1 &
 SRV=$!
 trap 'kill $SRV 2>/dev/null' EXIT
