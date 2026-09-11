@@ -1,0 +1,37 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "cmake-configure-debug",
+            "type": "shell",
+            "command": "${config:cmake.cmakePath}",
+            "args": [
+                "--preset",
+                "Debug"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "env": {
+                    "PATH": "/opt/ST/STM32CubeCLT_1.22.0/GNU-tools-for-STM32/bin:/opt/ST/STM32CubeCLT_1.22.0/Ninja/bin:${env:PATH}"
+                }
+            }
+        },
+        {
+            "label": "cmake-build-debug",
+            "type": "shell",
+            "command": "${config:cmake.cmakePath}",
+            "args": [
+                "--build",
+                "--preset",
+                "Debug"
+            ],
+            "dependsOn": "cmake-configure-debug",
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "env": {
+                    "PATH": "/opt/ST/STM32CubeCLT_1.22.0/GNU-tools-for-STM32/bin:/opt/ST/STM32CubeCLT_1.22.0/Ninja/bin:${env:PATH}"
+                }
+            }
+        }
+    ]
+}
