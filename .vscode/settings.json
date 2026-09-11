@@ -1,0 +1,13 @@
+{
+    "cmake.cmakePath": "/opt/ST/STM32CubeCLT_1.22.0/CMake/bin/cmake",
+    "cmake.useCMakePresets": "always",
+    "cmake.environment": {
+        "PATH": "/opt/ST/STM32CubeCLT_1.22.0/GNU-tools-for-STM32/bin:/opt/ST/STM32CubeCLT_1.22.0/Ninja/bin:${env:PATH}"
+    },
+    "stm32cube-ide-clangd.path": "cube",
+    "stm32cube-ide-clangd.arguments": [
+        "starm-clangd",
+        "--query-driver=/opt/ST/STM32CubeCLT_1.22.0/GNU-tools-for-STM32/bin/arm-none-eabi-*"
+    ],
+    "cmake.sourceDirectory": "${workspaceFolder}/hello_world"
+}

@@ -1,0 +1,33 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "stlinkgdbtarget",
+            "request": "launch",
+            "name": "saframe_hello_world dev-boot (Appli + FSBL)",
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "cmake-build-debug",
+            "program": "${workspaceFolder}/hello_world/build/Debug/saframe_hello_world_FSBL.elf",
+            "imagesAndSymbols": [
+                {
+                    "imageFileName": "${workspaceFolder}/hello_world/build/Debug/saframe_hello_world_Appli.elf",
+                    "symbolFileName": "${workspaceFolder}/hello_world/build/Debug/saframe_hello_world_Appli.elf"
+                },
+                {
+                    "imageFileName": "${workspaceFolder}/hello_world/build/Debug/saframe_hello_world_FSBL.elf",
+                    "symbolFileName": "${workspaceFolder}/hello_world/build/Debug/saframe_hello_world_FSBL.elf"
+                }
+            ],
+            "runEntry": "usermain",
+            "serverApID": "1",
+            "serverInterfaceFrequency": "1000",
+            "deviceName": "STM32N657X0H3Q",
+            "deviceCore": "Cortex-M55",
+            "deviceTrustzone": "Secure-only",
+            "gdb": "/opt/ST/STM32CubeCLT_1.22.0/GNU-tools-for-STM32/bin/arm-none-eabi-gdb",
+            "serverExe": "ST-LINK_gdbserver",
+            "serverCwd": "/opt/ST/STM32CubeCLT_1.22.0/STLink-gdb-server/bin",
+            "serverCubeProgPath": "/opt/ST/STM32CubeCLT_1.22.0/STM32CubeProgrammer/bin"
+        }
+    ]
+}
