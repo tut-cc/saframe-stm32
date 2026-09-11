@@ -29,3 +29,4 @@ STM32N657 には内蔵フラッシュが無く、flash-boot は署名、外部 N
 - gdb の `load` は `set remote memory-write-packet-size 1024` (fixed) で小分けにする。
 - VCP の読み出しは gdb の転送と時間を分ける。同じ USB デバイスの 2 インターフェースへ同時にバルク転送すると SWD 側が劣化する。
 - `stty -f` の設定は close で破棄されるので、ボーレートは読むディスクリプタ自身で設定する (`tools/vcp_read.py`)。
+- VSCode の `stlinkgdbtarget` 経路も同日に確認した (非共有モード、`-k -d --frequency 1000 -m 1`)。ST-LINK を掴めるデバッグクライアントは同時に 1 つで、常駐の `stlink-server` や CubeIDE が居ても健全なプローブなら接続できるが、`Target USB comms error` の後は物理再接続が必要。

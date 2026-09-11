@@ -71,7 +71,8 @@ ST-LINK_gdbserver を SWD 1 MHz で起動し、gdb が Appli.elf、FSBL.elf の�
 2. USB を接続し、**先にシリアルポートを開きます**。ST-LINK の VCP は macOS では `/dev/cu.usbmodem*`、**115200 8N1** です。先に開いておかないと初期出力を取りこぼします。
 3. STM32CubeIDE で `saframe_hello_world_FSBL Debug` のデバッグ構成を起動します。Appli → FSBL の順に転送され、**`usermain` で停止します**。
 4. **Resume を押すまで何も出力されません。** Resume 後に下記の出力が始まります。
-5. VSCode から F5 でも同等のことを行う設定を入れてありますが、**実機では未検証**です。ST 拡張のスニペット設定 (`get-projects-binary-from-context1` を使うもの) は CubeMX 生成プロジェクト専用で、この構成では `project settings not found` で止まります。同梱の `launch.json` は ELF パス、デバイス名、gdb / gdbserver のパスを明示しています。
+5. VSCode の F5 (`saframe_hello_world dev-boot (Appli + FSBL)`) も実機で確認済みです (2026-09-11: 2 イメージ転送、`usermain` 停止、Resume 後に VCP へ出力)。ST 拡張のスニペット設定 (`get-projects-binary-from-context1` を使うもの) は CubeMX 生成プロジェクト専用で、この構成では `project settings not found` で止まるため使いません。
+7. デバッグクライアントは **同時に 1 つだけ** にしてください。VSCode のセッション、CubeIDE、`tools/devboot_run.sh` のどれかが ST-LINK を掴んでいると、他は `Device connect error` や `Target USB comms error` で失敗します。`Target USB comms error` が出た後は USB の抜き挿しが必要です。
 6. CubeIDE / VSCode の両 launch は SWD 周波数を **1000 kHz** に固定してあります (自動/最大では下記の stall が起きます)。
 
 ### macOS での注意 (ST-LINK V3、macOS 26 で確認)
@@ -114,7 +115,7 @@ task 2
 - MSP のオーバーフローはハードウェアで保護されません。`sys_start.c` が MSPLIM を下げるため、8 KiB を超えると Imalloc 領域を静かに壊します。上記の修正は「保護」ではなく「静的な領域分割」です。
 - `.ioc` からの再生成は禁止です。`.cproject` のインクルードパスと `main.c` のユーザブロックが壊れます。
 - CMake ビルドは CMSE インポートライブラリを生成しません (非セキュア側の利用者がいないため)。CubeIDE ビルドでは `Appli/Debug/secure_nsclib.o` として生成されます。
-- 実機動作は 2026-09-11 に `tools/devboot_run.sh` の経路で確認済みです (バナー、`Start User-main program.`、`task 1`/`task 2` が 50 秒で 97 回/70 回)。CubeIDE GUI と VSCode F5 の経路は未確認です。
+- 実機動作は 2026-09-11 に `tools/devboot_run.sh` と VSCode F5 の両経路で確認済みです (バナー、`Start User-main program.`、`task 1`/`task 2` が 50 秒で 97 回/70 回)。CubeIDE GUI からのデバッグ起動は未確認です。
 - CubeIDE のヘッドレスビルド (GUI なしの一括ビルド) は次のコマンドで確認済みです (CubeIDE 2.1.1、両 ELF 生成、0 errors)。
 
 ```
