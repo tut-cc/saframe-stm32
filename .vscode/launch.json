@@ -4,18 +4,18 @@
         {
             "type": "stlinkgdbtarget",
             "request": "launch",
-            "name": "saframe_hello_world dev-boot (Appli + FSBL)",
+            "name": "mtk3bsp2_stm32n657 face-detection dev-boot (Appli + FSBL)",
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "cmake-build-debug",
-            "program": "${workspaceFolder}/hello_world/build/Debug/saframe_hello_world_FSBL.elf",
+            "program": "${workspaceFolder}/build/Debug/mtk3bsp2_stm32n657_FSBL.elf",
             "imagesAndSymbols": [
                 {
-                    "imageFileName": "${workspaceFolder}/hello_world/build/Debug/saframe_hello_world_Appli.elf",
-                    "symbolFileName": "${workspaceFolder}/hello_world/build/Debug/saframe_hello_world_Appli.elf"
+                    "imageFileName": "${workspaceFolder}/build/Debug/mtk3bsp2_stm32n657_Appli.elf",
+                    "symbolFileName": "${workspaceFolder}/build/Debug/mtk3bsp2_stm32n657_Appli.elf"
                 },
                 {
-                    "imageFileName": "${workspaceFolder}/hello_world/build/Debug/saframe_hello_world_FSBL.elf",
-                    "symbolFileName": "${workspaceFolder}/hello_world/build/Debug/saframe_hello_world_FSBL.elf"
+                    "imageFileName": "${workspaceFolder}/build/Debug/mtk3bsp2_stm32n657_FSBL.elf",
+                    "symbolFileName": "${workspaceFolder}/build/Debug/mtk3bsp2_stm32n657_FSBL.elf"
                 }
             ],
             "runEntry": "usermain",
@@ -27,7 +27,8 @@
             "gdb": "/opt/ST/STM32CubeCLT_1.22.0/GNU-tools-for-STM32/bin/arm-none-eabi-gdb",
             "serverExe": "ST-LINK_gdbserver",
             "serverCwd": "/opt/ST/STM32CubeCLT_1.22.0/STLink-gdb-server/bin",
-            "serverCubeProgPath": "/opt/ST/STM32CubeCLT_1.22.0/STM32CubeProgrammer/bin"
+            "serverCubeProgPath": "/opt/ST/STM32CubeCLT_1.22.0/STM32CubeProgrammer/bin",
+            "serverReset": "Connect under reset"
         }
     ]
 }

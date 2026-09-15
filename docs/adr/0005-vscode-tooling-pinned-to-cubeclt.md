@@ -17,4 +17,6 @@ Codex（gpt-5.6-sol）のレビューで判明した点:
 ## Consequences
 
 - CubeCLT の版を更新したら `.vscode/settings.json` と `.clangd` の `--query-driver` も更新する。
-- 2 イメージのロードは schema 上は許されるが実機未検証。CubeIDE の launch を第一とする。
+- 2 イメージのロードは 2026-09-15 に顔検知アプリで実機確認した。VSCode の F5 で
+  `build/Debug` の Appli、FSBL の順にロードし、`usermain` から実行して顔検出まで動作した。
+  CubeIDE の launch を第一とする方針は変えないが、VSCode 経路も実機で使える。

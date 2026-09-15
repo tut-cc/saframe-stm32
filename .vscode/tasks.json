@@ -10,7 +10,7 @@
                 "Debug"
             ],
             "options": {
-                "cwd": "${workspaceFolder}/hello_world",
+                "cwd": "${workspaceFolder}",
                 "env": {
                     "PATH": "/opt/ST/STM32CubeCLT_1.22.0/GNU-tools-for-STM32/bin:/opt/ST/STM32CubeCLT_1.22.0/Ninja/bin:${env:PATH}"
                 }
@@ -27,9 +27,21 @@
             ],
             "dependsOn": "cmake-configure-debug",
             "options": {
-                "cwd": "${workspaceFolder}/hello_world",
+                "cwd": "${workspaceFolder}",
                 "env": {
                     "PATH": "/opt/ST/STM32CubeCLT_1.22.0/GNU-tools-for-STM32/bin:/opt/ST/STM32CubeCLT_1.22.0/Ninja/bin:${env:PATH}"
+                }
+            }
+        },
+        {
+            "label": "host-tests",
+            "type": "shell",
+            "command": "${config:cmake.cmakePath} --preset host-test && ${config:cmake.cmakePath} --build --preset host-test && ctest --preset host-test",
+            "group": "test",
+            "options": {
+                "cwd": "${workspaceFolder}/tests",
+                "env": {
+                    "PATH": "/opt/ST/STM32CubeCLT_1.22.0/Ninja/bin:${env:PATH}"
                 }
             }
         }
