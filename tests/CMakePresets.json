@@ -1,0 +1,28 @@
+{
+    "version": 3,
+    "configurePresets": [
+        {
+            "name": "host-test",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/../build/host-test",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "host-test",
+            "configurePreset": "host-test"
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "host-test",
+            "configurePreset": "host-test",
+            "output": {
+                "outputOnFailure": true
+            }
+        }
+    ]
+}
