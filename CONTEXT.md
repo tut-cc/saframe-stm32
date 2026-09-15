@@ -61,3 +61,27 @@ _Avoid_: 最小構成、minimal hello world、MVP
 **VCP**:
 ST-LINK が提供する仮想 COM ポート。T-Monitor コンソールの出力を PC で読む口。
 _Avoid_: シリアル、UART、COM ポート
+
+**CMake ビルド**:
+ルートの `CMakeLists.txt` と `CMakePresets.json` による CLI と VS Code 用のビルド経路。CubeIDE の `.cproject` と並存し、生成イメージは parity 検査で一致を保つ。
+_Avoid_: cmake ビルド、CLI ビルド、ninja ビルド
+
+**parity 検査**:
+CubeIDE ビルドと CMake ビルドの ELF を、オブジェクト集合・シンボル集合・セクションサイズで比較する検証。手順と許容差は ADR 0003。
+_Avoid_: 同一性チェック、ビルド比較、diff
+
+**ホストテスト**:
+HAL と μT-Kernel に依存しない C モジュールを PC 上でビルドして実行する検査。`tests/` に独立した CMake プロジェクトとして置き、`ctest --preset host-test` で走る。
+_Avoid_: ユニットテスト（単独で）、PC テスト、単体テスト
+
+**参照ツールチェーン**:
+GNU Tools for STM32 14.3.rel1。CubeIDE 2.1.1 と STM32CubeCLT 1.22.0 に同梱される。手元の CubeIDE ビルドと CMake ビルドはこれを使う。
+_Avoid_: ST の gcc、CubeIDE の gcc
+
+**CI ツールチェーン**:
+Arm 公式 `arm-gnu-toolchain-14.3.rel1`。参照ツールチェーンの元になった同一の GCC 14.3.1。CubeCLT は ST のログインが必要で GitHub-hosted runner に入れられないため CI ではこちらを使う。ツールチェーンファイルは環境変数 `ARM_TOOLCHAIN_DIR` でこれを指せる。
+_Avoid_: upstream gcc、公式 GCC
+
+**CI**:
+GitHub Actions でホストテストと CMake クロスビルドを実行する自動検証。**ワークフローは未追加**。導入するときはホストテストを先に入れ、ARM クロスビルドは両ターゲットのリンクが通るところまでを見る。実機と CubeIDE ビルドは CI では動かさない。CI と手元で結果が食い違ったら、まず CI 側のツールチェーン差を疑う。
+_Avoid_: 自動ビルド、パイプライン、CI ゲート
