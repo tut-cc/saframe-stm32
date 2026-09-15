@@ -4,3 +4,10 @@
 /FSBL/Debug/
 /FSBL/Release/
 *.log
+build/
+.cache/
+*.map
+*.su
+**/.vscode/c_cpp_properties.json
+**/.settings/bundles.store.json
+**/.settings/bundles-lock.store.json
