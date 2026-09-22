@@ -37,6 +37,10 @@
 #include "app_config.h"
 #include "crop_img.h"
 #include "privacy_filter.h"
+#include "face_detection_diagnostics.h"
+
+#undef assert
+#define assert(condition) APP_ASSERT(condition)
 
 
 #define LCD_FG_WIDTH  SCREEN_WIDTH
@@ -48,7 +52,7 @@
 #define CAMERA_FRAME_TIMEOUT_MS  (3000U)
 #define PRIVACY_RESULT_READY     (1U << 0)
 #define PRIVACY_BUFFER_RELEASED  (1U << 1)
-#define PRIVACY_FRAME_DEADLINE_MS (33U)
+#define PRIVACY_FRAME_DEADLINE_US (33000U)
 #define PRIVACY_ROI_MARGIN_PC    (15U)
 #define CONTROL_PERIOD_MS        (20U)
 #define BUTTON_DEBOUNCE_MS       (200U)
@@ -143,8 +147,9 @@ static ID privacy_result_mutex_id;
 static ID privacy_display_mutex_id;
 static PrivacyFrameResult privacy_results[2];
 static uint32_t privacy_published_index;
+static PrivacyFrameResult privacy_completed_result;
+static bool privacy_completed_result_valid;
 static volatile PrivacyMode privacy_mode = PRIVACY_MODE_MASK;
-static volatile uint32_t privacy_render_ms;
 static volatile uint32_t privacy_published_frames;
 static volatile uint32_t privacy_dropped_deadline;
 static volatile uint32_t privacy_consecutive_drops;
@@ -162,14 +167,18 @@ static void IAC_Config(void);
 static void NeuralNetwork_init(uint32_t *nn_in_length, stai_ptr *nn_out, stai_size *number_output, int32_t nn_out_len[]);
 static void StartPrivacyTasks(void);
 static bool PrimeCamera(void);
+static void PerformanceCounter_Init(void);
+static uint32_t PerformanceCounter_Now(void);
+static uint32_t PerformanceCounter_ToUs(uint32_t cycles);
+static uint32_t PerformanceCounter_DeadlineCycles(void);
 static void PublishPrivacyResult(od_pp_out_t *postprocess,
                                  uint32_t frame_number,
                                  uint32_t buffer_index,
-                                 uint32_t deadline_started_at,
-                                 uint32_t capture_ms,
-                                 uint32_t inference_ms,
-                                 uint32_t postprocess_ms,
-                                 uint32_t vision_ms);
+                                 uint32_t deadline_started_cycles,
+                                 uint32_t capture_us,
+                                 uint32_t inference_us,
+                                 uint32_t postprocess_us,
+                                 uint32_t vision_us);
 static void PrivacyRenderTask(INT stacd, void *exinf);
 static void ControlMonitorTask(INT stacd, void *exinf);
 
@@ -204,6 +213,9 @@ static const T_CTSK control_monitor_task_config = {
   */
 void FaceDetection_Run(void)
 {
+  PerformanceCounter_Init();
+  AppDiagnostics_ReportPreviousFault();
+
   T_CFLG camera_frame_flag = {
     .flgatr = TA_TFIFO | TA_WMUL,
     .iflgptn = 0,
@@ -278,13 +290,14 @@ void FaceDetection_Run(void)
   uint32_t frame_count = 0;
   while (1)
   {
+    g_app_diagnostic_stage = APP_STAGE_CAMERA_CAPTURE;
     CameraPipeline_IspUpdate();
 
     const uint32_t working_index = lcd_bg_working_idx;
     assert((privacy_frame_state[working_index] == PRIVACY_FRAME_WORKING) ||
            (privacy_frame_state[working_index] == PRIVACY_FRAME_DROPPED));
     privacy_frame_state[working_index] = PRIVACY_FRAME_WORKING;
-    const uint32_t capture_started_at = HAL_GetTick();
+    const uint32_t capture_started_cycles = PerformanceCounter_Now();
     CameraPipeline_DisplayPipe_Start(lcd_bg_buffer[working_index], CMW_MODE_SNAPSHOT);
 
 #if DCMIPP_NN_NEEDS_CROP
@@ -312,8 +325,9 @@ void FaceDetection_Run(void)
     }
     assert(ercd == E_OK);
 
-    const uint32_t capture_completed_at = HAL_GetTick();
-    const uint32_t capture_ms = capture_completed_at - capture_started_at;
+    const uint32_t capture_completed_cycles = PerformanceCounter_Now();
+    const uint32_t capture_us = PerformanceCounter_ToUs(
+        capture_completed_cycles - capture_started_cycles);
 
     uint32_t ts[3] = { 0 };
 
@@ -327,28 +341,32 @@ void FaceDetection_Run(void)
     SCB_CleanInvalidateDCache_by_Addr(nn_in, nn_in_len);
 #endif
 
-    const uint32_t vision_started_at = capture_completed_at;
-    ts[0] = vision_started_at;
+    const uint32_t vision_started_cycles = capture_completed_cycles;
+    ts[0] = vision_started_cycles;
     if (frame_count == 0U)
     {
       Display_Status("OD: first inference running", UTIL_LCD_COLOR_GREEN);
       tm_putstring((UB *)"OD: first NN camera frame received; starting inference.\n");
     }
     /* run ATON inference */
+    g_app_diagnostic_frame = frame_count + 1U;
+    g_app_diagnostic_stage = APP_STAGE_NPU_INFERENCE;
     ret = stai_network_run(network_context, STAI_MODE_SYNC);
     assert(ret == 0);
-    ts[1] = HAL_GetTick();
+    ts[1] = PerformanceCounter_Now();
 
+    g_app_diagnostic_stage = APP_STAGE_POSTPROCESS;
     int32_t pp_ret = app_postprocess_run((void **) nn_out, number_output, &pp_output, &pp_params);
     assert(pp_ret == 0);
-    ts[2] = HAL_GetTick();
+    ts[2] = PerformanceCounter_Now();
     privacy_frame_state[working_index] = PRIVACY_FRAME_PROCESSED;
 
     frame_count++;
     PublishPrivacyResult(&pp_output, frame_count, working_index,
-                         capture_completed_at, capture_ms,
-                         ts[1] - ts[0], ts[2] - ts[1],
-                         ts[2] - vision_started_at);
+                         capture_completed_cycles, capture_us,
+                         PerformanceCounter_ToUs(ts[1] - ts[0]),
+                         PerformanceCounter_ToUs(ts[2] - ts[1]),
+                         PerformanceCounter_ToUs(ts[2] - vision_started_cycles));
     /* Discard nn_out region (used by pp_input and pp_outputs variables) to avoid Dcache evictions during nn inference */
     for (int i = 0; i < number_output; i++)
     {
@@ -676,21 +694,21 @@ static PrivacyRoi MakePrivacyRoi(const od_pp_outBuffer_t *detection)
 static void PublishPrivacyResult(od_pp_out_t *postprocess,
                                  uint32_t frame_number,
                                  uint32_t buffer_index,
-                                 uint32_t deadline_started_at,
-                                 uint32_t capture_ms,
-                                 uint32_t inference_ms,
-                                 uint32_t postprocess_ms,
-                                 uint32_t vision_ms)
+                                 uint32_t deadline_started_cycles,
+                                 uint32_t capture_us,
+                                 uint32_t inference_us,
+                                 uint32_t postprocess_us,
+                                 uint32_t vision_us)
 {
   PrivacyFrameResult result = {
     .frame_number = frame_number,
     .buffer_index = buffer_index,
     .state = PRIVACY_FRAME_PROCESSED,
-    .deadline_started_at = deadline_started_at,
-    .capture_ms = capture_ms,
-    .inference_ms = inference_ms,
-    .postprocess_ms = postprocess_ms,
-    .vision_ms = vision_ms,
+    .deadline_started_cycles = deadline_started_cycles,
+    .capture_us = capture_us,
+    .inference_us = inference_us,
+    .postprocess_us = postprocess_us,
+    .vision_us = vision_us,
   };
 
   result.detection_count = (uint32_t)postprocess->nb_detect;
@@ -756,36 +774,64 @@ static void PrivacyRenderTask(INT stacd, void *exinf)
     result = privacy_results[privacy_published_index];
     assert(tk_unl_mtx(privacy_result_mutex_id) == E_OK);
 
-    const uint32_t render_started_at = HAL_GetTick();
+    const uint32_t render_started_cycles = PerformanceCounter_Now();
     const PrivacyMode mode = privacy_mode;
+    result.applied_mode = mode;
     assert(result.state == PRIVACY_FRAME_PROCESSED);
     assert(privacy_frame_state[result.buffer_index] == PRIVACY_FRAME_PROCESSED);
     uint8_t *working_buffer = lcd_bg_buffer[result.buffer_index];
     const uint32_t active_frame_size = lcd_bg_area.XSize * lcd_bg_area.YSize * 2U;
+
+    g_app_diagnostic_frame = result.frame_number;
+    g_app_diagnostic_stage = APP_STAGE_CACHE_INVALIDATE;
+    uint32_t phase_started_cycles = PerformanceCounter_Now();
     SCB_InvalidateDCache_by_Addr(working_buffer, active_frame_size);
+    result.cache_invalidate_us = PerformanceCounter_ToUs(
+        PerformanceCounter_Now() - phase_started_cycles);
+
+    g_app_diagnostic_stage = APP_STAGE_PRIVACY_FILTER;
+    phase_started_cycles = PerformanceCounter_Now();
     PrivacyFilter_ApplyRgb565(&result, mode, (uint16_t *)working_buffer,
                               lcd_bg_area.XSize, lcd_bg_area.YSize);
+    result.filter_us = PerformanceCounter_ToUs(
+        PerformanceCounter_Now() - phase_started_cycles);
+
+    g_app_diagnostic_stage = APP_STAGE_CACHE_CLEAN;
+    phase_started_cycles = PerformanceCounter_Now();
     SCB_CleanDCache_by_Addr(working_buffer, active_frame_size);
+    result.cache_clean_us = PerformanceCounter_ToUs(
+        PerformanceCounter_Now() - phase_started_cycles);
 
 #if PRIVACY_TEST_RENDER_DELAY_MS > 0
     (void)tk_dly_tsk(PRIVACY_TEST_RENDER_DELAY_MS);
 #endif
 
-    const uint32_t safety_completed_at = HAL_GetTick();
-    result.render_ms = safety_completed_at - render_started_at;
-    result.total_ms = safety_completed_at - result.deadline_started_at;
+    const uint32_t safety_completed_cycles = PerformanceCounter_Now();
+    result.render_us = PerformanceCounter_ToUs(
+        safety_completed_cycles - render_started_cycles);
+    result.total_us = PerformanceCounter_ToUs(
+        safety_completed_cycles - result.deadline_started_cycles);
     const bool publish = PrivacyFrame_IsWithinDeadline(
-        result.deadline_started_at, safety_completed_at, PRIVACY_FRAME_DEADLINE_MS);
+        result.deadline_started_cycles, safety_completed_cycles,
+        PerformanceCounter_DeadlineCycles());
 
     assert(tk_loc_mtx(privacy_display_mutex_id, TMO_FEVR) == E_OK);
+    uint32_t ltdc_cycles = 0U;
+    uint32_t vblank_cycles = 0U;
     if (publish)
     {
       const uint32_t old_display_index = lcd_bg_display_idx;
+      g_app_diagnostic_stage = APP_STAGE_LTDC_RELOAD;
+      phase_started_cycles = PerformanceCounter_Now();
       assert(HAL_LTDC_SetAddress_NoReload(
           &hlcd_ltdc, (uint32_t)working_buffer, LTDC_LAYER_1) == HAL_OK);
       assert(HAL_LTDC_ReloadLayer(&hlcd_ltdc, LTDC_RELOAD_VERTICAL_BLANKING,
                                   LTDC_LAYER_1) == HAL_OK);
+      ltdc_cycles += PerformanceCounter_Now() - phase_started_cycles;
+      g_app_diagnostic_stage = APP_STAGE_VBLANK_WAIT;
+      phase_started_cycles = PerformanceCounter_Now();
       WaitForLayerReload(LTDC_LAYER_1);
+      vblank_cycles += PerformanceCounter_Now() - phase_started_cycles;
       lcd_bg_display_idx = result.buffer_index;
       lcd_bg_working_idx = old_display_index;
       privacy_frame_state[result.buffer_index] = PRIVACY_FRAME_PUBLISHED;
@@ -810,29 +856,43 @@ static void PrivacyRenderTask(INT stacd, void *exinf)
     };
     PrivacyFilter_Clear(&overlay_target);
 
+    g_app_diagnostic_stage = APP_STAGE_LTDC_RELOAD;
+    phase_started_cycles = PerformanceCounter_Now();
     assert(HAL_LTDC_SetAddress_NoReload(
         &hlcd_ltdc, (uint32_t)lcd_fg_buffer[lcd_fg_buffer_rd_idx], LTDC_LAYER_2) == HAL_OK);
+    ltdc_cycles += PerformanceCounter_Now() - phase_started_cycles;
 
     UTIL_LCD_SetTextColor(UTIL_LCD_COLOR_WHITE);
     UTIL_LCD_SetBackColor(0xA0000000);
     UTIL_LCDEx_PrintfAt(0, LINE(1), CENTER_MODE, "%s | Objects %u | %s",
                        PrivacyFilter_ModeName(mode), result.detection_count,
                        publish ? "PUBLISHED" : "DROPPED");
-    UTIL_LCDEx_PrintfAt(0, LINE(20), CENTER_MODE, "AI %ums | Total %ums | Drops %u",
-                       result.inference_ms, result.total_ms, privacy_dropped_deadline);
+    UTIL_LCDEx_PrintfAt(0, LINE(20), CENTER_MODE, "AI %uus | Total %uus | Drops %u",
+                       result.inference_us, result.total_us, privacy_dropped_deadline);
     UTIL_LCD_SetBackColor(0);
 
     SCB_CleanDCache_by_Addr(lcd_fg_buffer[lcd_fg_buffer_rd_idx],
                             LCD_FG_FRAMEBUFFER_SIZE);
+    phase_started_cycles = PerformanceCounter_Now();
     assert(HAL_LTDC_ReloadLayer(&hlcd_ltdc, LTDC_RELOAD_VERTICAL_BLANKING,
                                 LTDC_LAYER_2) == HAL_OK);
+    ltdc_cycles += PerformanceCounter_Now() - phase_started_cycles;
+    g_app_diagnostic_stage = APP_STAGE_VBLANK_WAIT;
+    phase_started_cycles = PerformanceCounter_Now();
     WaitForLayerReload(LTDC_LAYER_2);
+    vblank_cycles += PerformanceCounter_Now() - phase_started_cycles;
     lcd_fg_buffer_rd_idx = 1 - lcd_fg_buffer_rd_idx;
-    privacy_render_ms = result.render_ms;
+    result.ltdc_us = PerformanceCounter_ToUs(ltdc_cycles);
+    result.vblank_us = PerformanceCounter_ToUs(vblank_cycles);
+    result.published_frames = privacy_published_frames;
+    result.dropped_deadline = privacy_dropped_deadline;
+    result.consecutive_drops = privacy_consecutive_drops;
     assert(tk_unl_mtx(privacy_display_mutex_id) == E_OK);
 
     assert(tk_loc_mtx(privacy_result_mutex_id, TMO_FEVR) == E_OK);
     privacy_results[privacy_published_index] = result;
+    privacy_completed_result = result;
+    privacy_completed_result_valid = true;
     assert(tk_unl_mtx(privacy_result_mutex_id) == E_OK);
     assert(tk_set_flg(privacy_result_flag_id, PRIVACY_BUFFER_RELEASED) == E_OK);
   }
@@ -865,16 +925,25 @@ static void ControlMonitorTask(INT stacd, void *exinf)
     if ((now - last_log_at) >= 1000U)
     {
       PrivacyFrameResult result;
+      bool result_valid;
+      g_app_diagnostic_stage = APP_STAGE_MONITOR;
       assert(tk_loc_mtx(privacy_result_mutex_id, TMO_FEVR) == E_OK);
-      result = privacy_results[privacy_published_index];
+      result = privacy_completed_result;
+      result_valid = privacy_completed_result_valid;
       assert(tk_unl_mtx(privacy_result_mutex_id) == E_OK);
-      tm_printf((UB *)"OD: frame=%u mode=%s detections=%u capture=%ums ai=%ums pp=%ums "
-                       "vision=%ums render=%ums total=%ums published=%u dropped=%u consecutive=%u.\n",
-                result.frame_number, PrivacyFilter_ModeName(privacy_mode),
-                result.detection_count, result.capture_ms, result.inference_ms,
-                result.postprocess_ms, result.vision_ms, result.render_ms,
-                result.total_ms, privacy_published_frames,
-                privacy_dropped_deadline, privacy_consecutive_drops);
+      if (result_valid)
+      {
+        tm_printf((UB *)"OD: frame=%u mode=%s detections=%u capture=%uus ai=%uus pp=%uus "
+                         "vision=%uus inv=%uus filter=%uus clean=%uus render=%uus total=%uus "
+                         "ltdc=%uus vblank=%uus published=%u dropped=%u consecutive=%u.\n",
+                  result.frame_number, PrivacyFilter_ModeName(result.applied_mode),
+                  result.detection_count, result.capture_us, result.inference_us,
+                  result.postprocess_us, result.vision_us,
+                  result.cache_invalidate_us, result.filter_us, result.cache_clean_us,
+                  result.render_us, result.total_us, result.ltdc_us, result.vblank_us,
+                  result.published_frames, result.dropped_deadline,
+                  result.consecutive_drops);
+      }
       last_log_at = now;
     }
 
@@ -938,6 +1007,33 @@ static void LCD_init(void)
   UTIL_LCD_Clear(0x00000000);
   UTIL_LCD_SetFont(&Font20);
   UTIL_LCD_SetTextColor(UTIL_LCD_COLOR_WHITE);
+}
+
+static void PerformanceCounter_Init(void)
+{
+  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+  DWT->CYCCNT = 0U;
+  DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+  assert((DWT->CTRL & DWT_CTRL_CYCCNTENA_Msk) != 0U);
+}
+
+static uint32_t PerformanceCounter_Now(void)
+{
+  return DWT->CYCCNT;
+}
+
+static uint32_t PerformanceCounter_ToUs(uint32_t cycles)
+{
+  const uint32_t cycles_per_us = SystemCoreClock / 1000000U;
+  assert(cycles_per_us != 0U);
+  return cycles / cycles_per_us;
+}
+
+static uint32_t PerformanceCounter_DeadlineCycles(void)
+{
+  const uint32_t cycles_per_us = SystemCoreClock / 1000000U;
+  assert(cycles_per_us != 0U);
+  return cycles_per_us * PRIVACY_FRAME_DEADLINE_US;
 }
 
 static void WaitForLayerReload(uint32_t layer_index)

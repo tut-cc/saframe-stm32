@@ -138,9 +138,9 @@ static void test_rgb565_mosaic_and_zero_detections(void)
 
 static void test_deadline_boundary_and_tick_wrap(void)
 {
-  assert(PrivacyFrame_IsWithinDeadline(100U, 132U, 33U));
-  assert(PrivacyFrame_IsWithinDeadline(100U, 133U, 33U));
-  assert(!PrivacyFrame_IsWithinDeadline(100U, 134U, 33U));
+  assert(PrivacyFrame_IsWithinDeadline(100U, 33099U, 33000U));
+  assert(PrivacyFrame_IsWithinDeadline(100U, 33100U, 33000U));
+  assert(!PrivacyFrame_IsWithinDeadline(100U, 33101U, 33000U));
   assert(PrivacyFrame_IsWithinDeadline(UINT32_MAX - 10U, 5U, 16U));
 }
 

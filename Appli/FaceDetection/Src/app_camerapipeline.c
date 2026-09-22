@@ -22,8 +22,11 @@
 #include "app_config.h"
 #include "crop_img.h"
 #include "face_detection_app.h"
+#include "face_detection_diagnostics.h"
 #include "stai_network.h"
 
+#undef assert
+#define assert(condition) APP_ASSERT(condition)
 
 /* Leave the driver use the default resolution */
 #define CAMERA_WIDTH 0

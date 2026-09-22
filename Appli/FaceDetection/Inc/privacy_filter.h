@@ -37,13 +37,22 @@ typedef struct
   uint32_t frame_number;
   uint32_t buffer_index;
   PrivacyFrameState state;
-  uint32_t deadline_started_at;
-  uint32_t capture_ms;
-  uint32_t inference_ms;
-  uint32_t postprocess_ms;
-  uint32_t vision_ms;
-  uint32_t render_ms;
-  uint32_t total_ms;
+  PrivacyMode applied_mode;
+  uint32_t deadline_started_cycles;
+  uint32_t capture_us;
+  uint32_t inference_us;
+  uint32_t postprocess_us;
+  uint32_t vision_us;
+  uint32_t cache_invalidate_us;
+  uint32_t filter_us;
+  uint32_t cache_clean_us;
+  uint32_t render_us;
+  uint32_t total_us;
+  uint32_t ltdc_us;
+  uint32_t vblank_us;
+  uint32_t published_frames;
+  uint32_t dropped_deadline;
+  uint32_t consecutive_drops;
   uint32_t detection_count;
   PrivacyRoi detections[PRIVACY_MAX_DETECTIONS];
 } PrivacyFrameResult;
@@ -71,7 +80,7 @@ void PrivacyFilter_ApplyRgb565(const PrivacyFrameResult *result,
                                uint32_t height);
 bool PrivacyFrame_IsWithinDeadline(uint32_t started_at,
                                    uint32_t completed_at,
-                                   uint32_t deadline_ms);
+                                   uint32_t deadline_cycles);
 const char *PrivacyFilter_ModeName(PrivacyMode mode);
 
 #ifdef __cplusplus

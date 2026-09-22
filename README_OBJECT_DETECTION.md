@@ -84,8 +84,26 @@ snapshot取得し、AI推論とマスク／モザイク処理が完了したフ�
 アウト時のT-Monitor出力にはPipe別の完了回数を表示するため、どちらの経路で停止した
 かを判別できます。
 
-T-Monitorには1秒ごとにcapture、AI、後処理、Vision、Render、合計時間と、公開・
-破棄フレーム数を出力します。期限超過経路を実機確認する場合は、Appliのコンパイラ
+T-Monitorには1秒ごとにcapture、AI、後処理、Vision、キャッシュinvalidate、
+MASK/MOSAIC本体、キャッシュclean、Render、合計、LTDC更新、VBlank待ちの時間を
+マイクロ秒単位で出力します。監視値は処理中ではなく最後に完了したフレームの値です。
+公開・破棄フレーム数も同じ行へ出力します。期限判定はDWT cycle counterを使用して
+33,000 usで判定します。
+
+HardFault、MemManage、BusFault、UsageFaultまたはアプリケーションassertが発生した
+場合は、障害種別、処理段階、フレーム番号、PC/LR/SP、CFSR/HFSR/MMFAR/BFARを
+`.noinit`へ保存します。dev-bootで再起動すると、前回障害をT-Monitorへ`FAULT:`で
+出力します。
+
+記録されたPCは、使用中のGNU Arm Embedded Toolchainで次のようにソース位置へ変換
+できます（`0x...`は`FAULT:`行のPCへ置き換えます）。
+
+```bash
+arm-none-eabi-addr2line -f -C \
+  -e Appli/Debug/mtk3bsp2_stm32n657_Appli.elf 0x...
+```
+
+期限超過経路を実機確認する場合は、Appliのコンパイラ
 定義へ次を一時的に追加してください。
 
 ```text

@@ -256,9 +256,9 @@ void PrivacyFilter_ApplyRgb565(const PrivacyFrameResult *result,
 
 bool PrivacyFrame_IsWithinDeadline(uint32_t started_at,
                                    uint32_t completed_at,
-                                   uint32_t deadline_ms)
+                                   uint32_t deadline_cycles)
 {
-  return (completed_at - started_at) <= deadline_ms;
+  return (completed_at - started_at) <= deadline_cycles;
 }
 
 const char *PrivacyFilter_ModeName(PrivacyMode mode)
