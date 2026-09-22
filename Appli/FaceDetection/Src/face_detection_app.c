@@ -18,6 +18,7 @@
 #include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 
 #include <tk/tkernel.h>
 #include <tm/tmonitor.h>
@@ -41,13 +42,20 @@
 #define LCD_FG_WIDTH  SCREEN_WIDTH
 #define LCD_FG_HEIGHT SCREEN_HEIGHT
 #define LCD_FG_FRAMEBUFFER_SIZE  (LCD_FG_WIDTH * LCD_FG_HEIGHT * 2)
+#define LCD_BG_FRAMEBUFFER_SIZE  (SCREEN_WIDTH * SCREEN_HEIGHT * 2)
 
 #define NETWORK_WEIGHTS_ADDRESS  (0x70380000UL)
 #define CAMERA_FRAME_TIMEOUT_MS  (3000U)
 #define PRIVACY_RESULT_READY     (1U << 0)
+#define PRIVACY_BUFFER_RELEASED  (1U << 1)
+#define PRIVACY_FRAME_DEADLINE_MS (33U)
 #define PRIVACY_ROI_MARGIN_PC    (15U)
 #define CONTROL_PERIOD_MS        (20U)
 #define BUTTON_DEBOUNCE_MS       (200U)
+
+#ifndef PRIVACY_TEST_RENDER_DELAY_MS
+#define PRIVACY_TEST_RENDER_DELAY_MS (0U)
+#endif
 
 #ifndef APP_GIT_SHA1_STRING
 #define APP_GIT_SHA1_STRING "dev"
@@ -117,7 +125,13 @@ STAI_NETWORK_CONTEXT_DECLARE(network_context, STAI_NETWORK_CONTEXT_SIZE)
 /* Lcd Background Buffer */
 __attribute__ ((section (".psram_bss")))
 __attribute__ ((aligned (32)))
-static uint8_t lcd_bg_buffer[800 * 480 * 2];
+static uint8_t lcd_bg_buffer[2][LCD_BG_FRAMEBUFFER_SIZE];
+static volatile uint32_t lcd_bg_display_idx;
+static volatile uint32_t lcd_bg_working_idx = 1U;
+static volatile PrivacyFrameState privacy_frame_state[2] = {
+  PRIVACY_FRAME_PUBLISHED,
+  PRIVACY_FRAME_WORKING,
+};
 /* Lcd Foreground Buffer */
 __attribute__ ((section (".psram_bss")))
 __attribute__ ((aligned (32)))
@@ -131,12 +145,16 @@ static PrivacyFrameResult privacy_results[2];
 static uint32_t privacy_published_index;
 static volatile PrivacyMode privacy_mode = PRIVACY_MODE_MASK;
 static volatile uint32_t privacy_render_ms;
+static volatile uint32_t privacy_published_frames;
+static volatile uint32_t privacy_dropped_deadline;
+static volatile uint32_t privacy_consecutive_drops;
 
 static void SystemClock_Config(void);
 static void NPURam_enable(void);
 static void NPUCache_config(void);
 static void Display_Status(const char *message, uint32_t color);
 static void LCD_init(void);
+static void WaitForLayerReload(uint32_t layer_index);
 static void Security_Config(void);
 static void set_clk_sleep_mode(void);
 static void IAC_Config(void);
@@ -144,14 +162,16 @@ static void NeuralNetwork_init(uint32_t *nn_in_length, stai_ptr *nn_out, stai_si
 static void StartPrivacyTasks(void);
 static void PublishPrivacyResult(od_pp_out_t *postprocess,
                                  uint32_t frame_number,
+                                 uint32_t buffer_index,
+                                 uint32_t deadline_started_at,
+                                 uint32_t capture_ms,
                                  uint32_t inference_ms,
+                                 uint32_t postprocess_ms,
                                  uint32_t vision_ms);
 static void PrivacyRenderTask(INT stacd, void *exinf);
 static void ControlMonitorTask(INT stacd, void *exinf);
 
 static ID camera_frame_flag_id;
-
-#define CAMERA_FRAME_READY (1U << 0)
 
 static void CSI_InterruptHandler(UINT intno);
 static void DCMIPP_InterruptHandler(UINT intno);
@@ -227,9 +247,6 @@ void FaceDetection_Run(void)
   LCD_init();
   tm_putstring((UB *)"OD: LCD foreground layer initialized.\n");
 
-  /* Start LCD Display camera pipe stream */
-  CameraPipeline_DisplayPipe_Start(lcd_bg_buffer, CMW_MODE_CONTINUOUS);
-
   if (!weights_valid)
   {
     Display_Status("ERROR: program network_data.hex", UTIL_LCD_COLOR_RED);
@@ -251,6 +268,13 @@ void FaceDetection_Run(void)
   {
     CameraPipeline_IspUpdate();
 
+    const uint32_t working_index = lcd_bg_working_idx;
+    assert((privacy_frame_state[working_index] == PRIVACY_FRAME_WORKING) ||
+           (privacy_frame_state[working_index] == PRIVACY_FRAME_DROPPED));
+    privacy_frame_state[working_index] = PRIVACY_FRAME_WORKING;
+    const uint32_t capture_started_at = HAL_GetTick();
+    CameraPipeline_DisplayPipe_Start(lcd_bg_buffer[working_index], CMW_MODE_SNAPSHOT);
+
 #if DCMIPP_NN_NEEDS_CROP
     /* Start NN camera single capture Snapshot into intermediate buffer */
     CameraPipeline_NNPipe_Start(dcmipp_out_nn, CMW_MODE_SNAPSHOT);
@@ -260,12 +284,13 @@ void FaceDetection_Run(void)
 #endif
 
     UINT frame_pattern;
-    ER ercd = tk_wai_flg(camera_frame_flag_id, CAMERA_FRAME_READY,
-                         TWF_ORW | TWF_BITCLR, &frame_pattern, CAMERA_FRAME_TIMEOUT_MS);
+    ER ercd = tk_wai_flg(camera_frame_flag_id,
+                         DISPLAY_FRAME_READY | NN_FRAME_READY,
+                         TWF_ANDW | TWF_BITCLR, &frame_pattern, CAMERA_FRAME_TIMEOUT_MS);
     if (ercd == E_TMOUT)
     {
-      tm_putstring((UB *)"OD: ERROR: timed out waiting for DCMIPP pipe 2.\n");
-      Display_Status("ERROR: NN camera timeout", UTIL_LCD_COLOR_RED);
+      tm_putstring((UB *)"OD: ERROR: timed out waiting for DCMIPP snapshot pipes.\n");
+      Display_Status("ERROR: camera timeout", UTIL_LCD_COLOR_RED);
       while (1)
       {
         CameraPipeline_IspUpdate();
@@ -274,7 +299,10 @@ void FaceDetection_Run(void)
     }
     assert(ercd == E_OK);
 
-    uint32_t ts[2] = { 0 };
+    const uint32_t capture_completed_at = HAL_GetTick();
+    const uint32_t capture_ms = capture_completed_at - capture_started_at;
+
+    uint32_t ts[3] = { 0 };
 
 #if DCMIPP_NN_NEEDS_CROP
     /*
@@ -286,7 +314,7 @@ void FaceDetection_Run(void)
     SCB_CleanInvalidateDCache_by_Addr(nn_in, nn_in_len);
 #endif
 
-    const uint32_t vision_started_at = HAL_GetTick();
+    const uint32_t vision_started_at = capture_completed_at;
     ts[0] = vision_started_at;
     if (frame_count == 0U)
     {
@@ -300,16 +328,24 @@ void FaceDetection_Run(void)
 
     int32_t pp_ret = app_postprocess_run((void **) nn_out, number_output, &pp_output, &pp_params);
     assert(pp_ret == 0);
+    ts[2] = HAL_GetTick();
+    privacy_frame_state[working_index] = PRIVACY_FRAME_PROCESSED;
 
     frame_count++;
-    PublishPrivacyResult(&pp_output, frame_count, ts[1] - ts[0],
-                         HAL_GetTick() - vision_started_at);
+    PublishPrivacyResult(&pp_output, frame_count, working_index,
+                         capture_completed_at, capture_ms,
+                         ts[1] - ts[0], ts[2] - ts[1],
+                         ts[2] - vision_started_at);
     /* Discard nn_out region (used by pp_input and pp_outputs variables) to avoid Dcache evictions during nn inference */
     for (int i = 0; i < number_output; i++)
     {
       void *tmp = nn_out[i];
       SCB_InvalidateDCache_by_Addr(tmp, nn_out_len[i]);
     }
+
+    UINT release_pattern;
+    assert(tk_wai_flg(privacy_result_flag_id, PRIVACY_BUFFER_RELEASED,
+                      TWF_ORW | TWF_BITCLR, &release_pattern, TMO_FEVR) == E_OK);
   }
 }
 
@@ -359,11 +395,12 @@ void FaceDetection_HardwareInit(void)
   set_clk_sleep_mode();
 }
 
-void FaceDetection_CameraFrameCallback(void)
+void FaceDetection_CameraFrameCallback(uint32_t pipe)
 {
   if (camera_frame_flag_id > 0)
   {
-    (void)tk_set_flg(camera_frame_flag_id, CAMERA_FRAME_READY);
+    const UINT event = (pipe == DCMIPP_PIPE1) ? DISPLAY_FRAME_READY : NN_FRAME_READY;
+    (void)tk_set_flg(camera_frame_flag_id, event);
   }
 }
 
@@ -550,14 +587,14 @@ static int clamp_point(int *x, int *y)
   int xi = *x;
   int yi = *y;
 
-  if (*x < (int)lcd_bg_area.X0)
-    *x = lcd_bg_area.X0;
-  if (*y < (int)lcd_bg_area.Y0)
-    *y = lcd_bg_area.Y0;
-  if (*x >= lcd_bg_area.X0 + lcd_bg_area.XSize)
-    *x = lcd_bg_area.X0 + lcd_bg_area.XSize - 1;
-  if (*y >= lcd_bg_area.Y0 + lcd_bg_area.YSize)
-    *y = lcd_bg_area.Y0 + lcd_bg_area.YSize - 1;
+  if (*x < 0)
+    *x = 0;
+  if (*y < 0)
+    *y = 0;
+  if (*x >= (int)lcd_bg_area.XSize)
+    *x = lcd_bg_area.XSize - 1;
+  if (*y >= (int)lcd_bg_area.YSize)
+    *y = lcd_bg_area.YSize - 1;
 
   return (xi != *x) || (yi != *y);
 }
@@ -570,8 +607,8 @@ static void convert_length(float32_t wi, float32_t hi, int *wo, int *ho)
 
 static void convert_point(float32_t xi, float32_t yi, int *xo, int *yo)
 {
-  *xo = lcd_bg_area.XSize * xi + lcd_bg_area.X0;
-  *yo = lcd_bg_area.YSize * yi + lcd_bg_area.Y0;
+  *xo = lcd_bg_area.XSize * xi;
+  *yo = lcd_bg_area.YSize * yi;
 }
 
 static PrivacyRoi MakePrivacyRoi(const od_pp_outBuffer_t *detection)
@@ -605,12 +642,21 @@ static PrivacyRoi MakePrivacyRoi(const od_pp_outBuffer_t *detection)
 
 static void PublishPrivacyResult(od_pp_out_t *postprocess,
                                  uint32_t frame_number,
+                                 uint32_t buffer_index,
+                                 uint32_t deadline_started_at,
+                                 uint32_t capture_ms,
                                  uint32_t inference_ms,
+                                 uint32_t postprocess_ms,
                                  uint32_t vision_ms)
 {
   PrivacyFrameResult result = {
     .frame_number = frame_number,
+    .buffer_index = buffer_index,
+    .state = PRIVACY_FRAME_PROCESSED,
+    .deadline_started_at = deadline_started_at,
+    .capture_ms = capture_ms,
     .inference_ms = inference_ms,
+    .postprocess_ms = postprocess_ms,
     .vision_ms = vision_ms,
   };
 
@@ -656,6 +702,7 @@ static void Display_Status(const char *message, uint32_t color)
   ret = HAL_LTDC_ReloadLayer(&hlcd_ltdc, LTDC_RELOAD_VERTICAL_BLANKING,
                              LTDC_LAYER_2);
   assert(ret == HAL_OK);
+  WaitForLayerReload(LTDC_LAYER_2);
   lcd_fg_buffer_rd_idx = 1 - lcd_fg_buffer_rd_idx;
   assert(tk_unl_mtx(privacy_display_mutex_id) == E_OK);
 }
@@ -678,43 +725,83 @@ static void PrivacyRenderTask(INT stacd, void *exinf)
 
     const uint32_t render_started_at = HAL_GetTick();
     const PrivacyMode mode = privacy_mode;
+    assert(result.state == PRIVACY_FRAME_PROCESSED);
+    assert(privacy_frame_state[result.buffer_index] == PRIVACY_FRAME_PROCESSED);
+    uint8_t *working_buffer = lcd_bg_buffer[result.buffer_index];
+    const uint32_t active_frame_size = lcd_bg_area.XSize * lcd_bg_area.YSize * 2U;
+    SCB_InvalidateDCache_by_Addr(working_buffer, active_frame_size);
+    PrivacyFilter_ApplyRgb565(&result, mode, (uint16_t *)working_buffer,
+                              lcd_bg_area.XSize, lcd_bg_area.YSize);
+    SCB_CleanDCache_by_Addr(working_buffer, active_frame_size);
+
+#if PRIVACY_TEST_RENDER_DELAY_MS > 0
+    (void)tk_dly_tsk(PRIVACY_TEST_RENDER_DELAY_MS);
+#endif
+
+    const uint32_t safety_completed_at = HAL_GetTick();
+    result.render_ms = safety_completed_at - render_started_at;
+    result.total_ms = safety_completed_at - result.deadline_started_at;
+    const bool publish = PrivacyFrame_IsWithinDeadline(
+        result.deadline_started_at, safety_completed_at, PRIVACY_FRAME_DEADLINE_MS);
+
     assert(tk_loc_mtx(privacy_display_mutex_id, TMO_FEVR) == E_OK);
-    PrivacyRenderTarget target = {
+    if (publish)
+    {
+      const uint32_t old_display_index = lcd_bg_display_idx;
+      assert(HAL_LTDC_SetAddress_NoReload(
+          &hlcd_ltdc, (uint32_t)working_buffer, LTDC_LAYER_1) == HAL_OK);
+      assert(HAL_LTDC_ReloadLayer(&hlcd_ltdc, LTDC_RELOAD_VERTICAL_BLANKING,
+                                  LTDC_LAYER_1) == HAL_OK);
+      WaitForLayerReload(LTDC_LAYER_1);
+      lcd_bg_display_idx = result.buffer_index;
+      lcd_bg_working_idx = old_display_index;
+      privacy_frame_state[result.buffer_index] = PRIVACY_FRAME_PUBLISHED;
+      privacy_frame_state[old_display_index] = PRIVACY_FRAME_WORKING;
+      result.state = PRIVACY_FRAME_PUBLISHED;
+      privacy_published_frames++;
+      privacy_consecutive_drops = 0U;
+    }
+    else
+    {
+      lcd_bg_working_idx = result.buffer_index;
+      privacy_frame_state[result.buffer_index] = PRIVACY_FRAME_DROPPED;
+      result.state = PRIVACY_FRAME_DROPPED;
+      privacy_dropped_deadline++;
+      privacy_consecutive_drops++;
+    }
+
+    PrivacyRenderTarget overlay_target = {
       .overlay = (uint16_t *)lcd_fg_buffer[lcd_fg_buffer_rd_idx],
       .overlay_width = LCD_FG_WIDTH,
       .overlay_height = LCD_FG_HEIGHT,
-      .background = (const uint16_t *)lcd_bg_buffer,
-      .background_width = lcd_bg_area.XSize,
-      .background_height = lcd_bg_area.YSize,
-      .background_x = lcd_bg_area.X0,
-      .background_y = lcd_bg_area.Y0,
     };
+    PrivacyFilter_Clear(&overlay_target);
 
-    if (mode == PRIVACY_MODE_MOSAIC)
-    {
-      SCB_InvalidateDCache_by_Addr(lcd_bg_buffer, sizeof(lcd_bg_buffer));
-    }
-    PrivacyFilter_Render(&result, mode, &target);
-
-    const int ret = HAL_LTDC_SetAddress_NoReload(
-        &hlcd_ltdc, (uint32_t)lcd_fg_buffer[lcd_fg_buffer_rd_idx], LTDC_LAYER_2);
-    assert(ret == HAL_OK);
+    assert(HAL_LTDC_SetAddress_NoReload(
+        &hlcd_ltdc, (uint32_t)lcd_fg_buffer[lcd_fg_buffer_rd_idx], LTDC_LAYER_2) == HAL_OK);
 
     UTIL_LCD_SetTextColor(UTIL_LCD_COLOR_WHITE);
     UTIL_LCD_SetBackColor(0xA0000000);
-    UTIL_LCDEx_PrintfAt(0, LINE(1), CENTER_MODE, "%s | Objects %u",
-                       PrivacyFilter_ModeName(mode), result.detection_count);
-    UTIL_LCDEx_PrintfAt(0, LINE(20), CENTER_MODE, "AI %ums | Vision %ums | Draw %ums",
-                       result.inference_ms, result.vision_ms, privacy_render_ms);
+    UTIL_LCDEx_PrintfAt(0, LINE(1), CENTER_MODE, "%s | Objects %u | %s",
+                       PrivacyFilter_ModeName(mode), result.detection_count,
+                       publish ? "PUBLISHED" : "DROPPED");
+    UTIL_LCDEx_PrintfAt(0, LINE(20), CENTER_MODE, "AI %ums | Total %ums | Drops %u",
+                       result.inference_ms, result.total_ms, privacy_dropped_deadline);
     UTIL_LCD_SetBackColor(0);
 
     SCB_CleanDCache_by_Addr(lcd_fg_buffer[lcd_fg_buffer_rd_idx],
                             LCD_FG_FRAMEBUFFER_SIZE);
     assert(HAL_LTDC_ReloadLayer(&hlcd_ltdc, LTDC_RELOAD_VERTICAL_BLANKING,
                                 LTDC_LAYER_2) == HAL_OK);
+    WaitForLayerReload(LTDC_LAYER_2);
     lcd_fg_buffer_rd_idx = 1 - lcd_fg_buffer_rd_idx;
-    privacy_render_ms = HAL_GetTick() - render_started_at;
+    privacy_render_ms = result.render_ms;
     assert(tk_unl_mtx(privacy_display_mutex_id) == E_OK);
+
+    assert(tk_loc_mtx(privacy_result_mutex_id, TMO_FEVR) == E_OK);
+    privacy_results[privacy_published_index] = result;
+    assert(tk_unl_mtx(privacy_result_mutex_id) == E_OK);
+    assert(tk_set_flg(privacy_result_flag_id, PRIVACY_BUFFER_RELEASED) == E_OK);
   }
 }
 
@@ -737,7 +824,6 @@ static void ControlMonitorTask(INT stacd, void *exinf)
       privacy_mode = (privacy_mode == PRIVACY_MODE_MASK) ?
                      PRIVACY_MODE_MOSAIC : PRIVACY_MODE_MASK;
       last_switch_at = now;
-      (void)tk_set_flg(privacy_result_flag_id, PRIVACY_RESULT_READY);
       tm_printf((UB *)"PRIVACY: mode changed to %s.\n",
                 PrivacyFilter_ModeName(privacy_mode));
     }
@@ -749,10 +835,13 @@ static void ControlMonitorTask(INT stacd, void *exinf)
       assert(tk_loc_mtx(privacy_result_mutex_id, TMO_FEVR) == E_OK);
       result = privacy_results[privacy_published_index];
       assert(tk_unl_mtx(privacy_result_mutex_id) == E_OK);
-      tm_printf((UB *)"OD: frame=%u mode=%s detections=%u ai=%ums vision=%ums draw=%ums.\n",
+      tm_printf((UB *)"OD: frame=%u mode=%s detections=%u capture=%ums ai=%ums pp=%ums "
+                       "vision=%ums render=%ums total=%ums published=%u dropped=%u consecutive=%u.\n",
                 result.frame_number, PrivacyFilter_ModeName(privacy_mode),
-                result.detection_count, result.inference_ms, result.vision_ms,
-                privacy_render_ms);
+                result.detection_count, result.capture_ms, result.inference_ms,
+                result.postprocess_ms, result.vision_ms, result.render_ms,
+                result.total_ms, privacy_published_frames,
+                privacy_dropped_deadline, privacy_consecutive_drops);
       last_log_at = now;
     }
 
@@ -789,6 +878,8 @@ static void StartPrivacyTasks(void)
 
 static void LCD_init(void)
 {
+  memset(lcd_bg_buffer, 0, sizeof(lcd_bg_buffer));
+  SCB_CleanDCache_by_Addr(lcd_bg_buffer, sizeof(lcd_bg_buffer));
   BSP_LCD_Init(0, LCD_ORIENTATION_LANDSCAPE);
 
   /* Preview layer Init */
@@ -797,7 +888,7 @@ static void LCD_init(void)
   LayerConfig.X1          = lcd_bg_area.X0 + lcd_bg_area.XSize;
   LayerConfig.Y1          = lcd_bg_area.Y0 + lcd_bg_area.YSize;
   LayerConfig.PixelFormat = LCD_PIXEL_FORMAT_RGB565;
-  LayerConfig.Address     = (uint32_t) lcd_bg_buffer;
+  LayerConfig.Address     = (uint32_t) lcd_bg_buffer[lcd_bg_display_idx];
 
   BSP_LCD_ConfigLayer(0, LTDC_LAYER_1, &LayerConfig);
 
@@ -814,6 +905,16 @@ static void LCD_init(void)
   UTIL_LCD_Clear(0x00000000);
   UTIL_LCD_SetFont(&Font20);
   UTIL_LCD_SetTextColor(UTIL_LCD_COLOR_WHITE);
+}
+
+static void WaitForLayerReload(uint32_t layer_index)
+{
+  const uint32_t started_at = HAL_GetTick();
+  while ((LTDC_LAYER(&hlcd_ltdc, layer_index)->RCR & LTDC_LxRCR_VBR) != 0U)
+  {
+    assert((HAL_GetTick() - started_at) < CAMERA_FRAME_TIMEOUT_MS);
+    (void)tk_dly_tsk(1U);
+  }
 }
 
 /**

@@ -101,6 +101,54 @@ static void render_mosaic(const PrivacyRoi *roi, const PrivacyRenderTarget *targ
   }
 }
 
+static void fill_rgb565_rect(uint16_t *frame,
+                             uint32_t frame_width,
+                             uint32_t x,
+                             uint32_t y,
+                             uint32_t width,
+                             uint32_t height,
+                             uint16_t color)
+{
+  for (uint32_t row = 0; row < height; row++)
+  {
+    uint16_t *line = &frame[((y + row) * frame_width) + x];
+    for (uint32_t column = 0; column < width; column++)
+    {
+      line[column] = color;
+    }
+  }
+}
+
+static uint16_t average_rgb565_block(const uint16_t *frame,
+                                     uint32_t frame_width,
+                                     uint32_t x,
+                                     uint32_t y,
+                                     uint32_t width,
+                                     uint32_t height)
+{
+  uint32_t red = 0U;
+  uint32_t green = 0U;
+  uint32_t blue = 0U;
+  const uint32_t pixel_count = width * height;
+
+  for (uint32_t row = 0; row < height; row++)
+  {
+    const uint16_t *line = &frame[((y + row) * frame_width) + x];
+    for (uint32_t column = 0; column < width; column++)
+    {
+      const uint16_t pixel = line[column];
+      red += (pixel >> 11) & 0x1FU;
+      green += (pixel >> 5) & 0x3FU;
+      blue += pixel & 0x1FU;
+    }
+  }
+
+  red /= pixel_count;
+  green /= pixel_count;
+  blue /= pixel_count;
+  return (uint16_t)((red << 11) | (green << 5) | blue);
+}
+
 void PrivacyFilter_Clear(const PrivacyRenderTarget *target)
 {
   if ((target == NULL) || (target->overlay == NULL))
@@ -147,6 +195,70 @@ void PrivacyFilter_Render(const PrivacyFrameResult *result,
       render_mask(roi, target);
     }
   }
+}
+
+void PrivacyFilter_ApplyRgb565(const PrivacyFrameResult *result,
+                               PrivacyMode mode,
+                               uint16_t *frame,
+                               uint32_t width,
+                               uint32_t height)
+{
+  if ((result == NULL) || (frame == NULL) || (width == 0U) || (height == 0U))
+  {
+    return;
+  }
+
+  uint32_t count = result->detection_count;
+  if (count > PRIVACY_MAX_DETECTIONS)
+  {
+    count = PRIVACY_MAX_DETECTIONS;
+  }
+
+  for (uint32_t i = 0; i < count; i++)
+  {
+    const PrivacyRoi *roi = &result->detections[i];
+    if ((roi->x < 0) || (roi->y < 0) || (roi->width == 0U) || (roi->height == 0U))
+    {
+      continue;
+    }
+
+    const uint32_t x_start = (uint32_t)roi->x;
+    const uint32_t y_start = (uint32_t)roi->y;
+    if ((x_start >= width) || (y_start >= height))
+    {
+      continue;
+    }
+    const uint32_t x_end = (roi->width > (width - x_start)) ? width : x_start + roi->width;
+    const uint32_t y_end = (roi->height > (height - y_start)) ? height : y_start + roi->height;
+
+    if (mode == PRIVACY_MODE_MASK)
+    {
+      fill_rgb565_rect(frame, width, x_start, y_start,
+                       x_end - x_start, y_end - y_start, 0U);
+      continue;
+    }
+
+    for (uint32_t y = y_start; y < y_end; y += MOSAIC_BLOCK_SIZE)
+    {
+      const uint32_t block_height =
+          ((y_end - y) < MOSAIC_BLOCK_SIZE) ? (y_end - y) : MOSAIC_BLOCK_SIZE;
+      for (uint32_t x = x_start; x < x_end; x += MOSAIC_BLOCK_SIZE)
+      {
+        const uint32_t block_width =
+            ((x_end - x) < MOSAIC_BLOCK_SIZE) ? (x_end - x) : MOSAIC_BLOCK_SIZE;
+        const uint16_t color = average_rgb565_block(frame, width, x, y,
+                                                    block_width, block_height);
+        fill_rgb565_rect(frame, width, x, y, block_width, block_height, color);
+      }
+    }
+  }
+}
+
+bool PrivacyFrame_IsWithinDeadline(uint32_t started_at,
+                                   uint32_t completed_at,
+                                   uint32_t deadline_ms)
+{
+  return (completed_at - started_at) <= deadline_ms;
 }
 
 const char *PrivacyFilter_ModeName(PrivacyMode mode)

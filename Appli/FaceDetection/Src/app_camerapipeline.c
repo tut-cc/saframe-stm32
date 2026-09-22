@@ -172,8 +172,9 @@ int CMW_CAMERA_PIPE_FrameEventCallback(uint32_t pipe)
 {
   switch (pipe)
   {
+    case DCMIPP_PIPE1 :
     case DCMIPP_PIPE2 :
-      FaceDetection_CameraFrameCallback();
+      FaceDetection_CameraFrameCallback(pipe);
       break;
   }
   return 0;

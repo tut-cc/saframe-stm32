@@ -2,6 +2,7 @@
 #define PRIVACY_FILTER_H
 
 #include <stdint.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -15,6 +16,14 @@ typedef enum
   PRIVACY_MODE_MOSAIC = 1,
 } PrivacyMode;
 
+typedef enum
+{
+  PRIVACY_FRAME_WORKING = 0,
+  PRIVACY_FRAME_PROCESSED,
+  PRIVACY_FRAME_PUBLISHED,
+  PRIVACY_FRAME_DROPPED,
+} PrivacyFrameState;
+
 typedef struct
 {
   int16_t x;
@@ -26,8 +35,15 @@ typedef struct
 typedef struct
 {
   uint32_t frame_number;
+  uint32_t buffer_index;
+  PrivacyFrameState state;
+  uint32_t deadline_started_at;
+  uint32_t capture_ms;
   uint32_t inference_ms;
+  uint32_t postprocess_ms;
   uint32_t vision_ms;
+  uint32_t render_ms;
+  uint32_t total_ms;
   uint32_t detection_count;
   PrivacyRoi detections[PRIVACY_MAX_DETECTIONS];
 } PrivacyFrameResult;
@@ -48,6 +64,14 @@ void PrivacyFilter_Clear(const PrivacyRenderTarget *target);
 void PrivacyFilter_Render(const PrivacyFrameResult *result,
                           PrivacyMode mode,
                           const PrivacyRenderTarget *target);
+void PrivacyFilter_ApplyRgb565(const PrivacyFrameResult *result,
+                               PrivacyMode mode,
+                               uint16_t *frame,
+                               uint32_t width,
+                               uint32_t height);
+bool PrivacyFrame_IsWithinDeadline(uint32_t started_at,
+                                   uint32_t completed_at,
+                                   uint32_t deadline_ms);
 const char *PrivacyFilter_ModeName(PrivacyMode mode);
 
 #ifdef __cplusplus
