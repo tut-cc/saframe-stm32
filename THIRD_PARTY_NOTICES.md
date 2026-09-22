@@ -13,6 +13,16 @@
   パイプライン、後処理、STM32N6570-DK BSP
 - ライセンス: 各ソースファイルおよび上記リポジトリのライセンスを参照
 
+## STM32 AI Model Zoo Services / STM32N6 Getting Started — Object Detection
+
+- 提供者: STMicroelectronics
+- Model Zoo Services: https://github.com/STMicroelectronics/stm32ai-modelzoo-services
+- Model Zoo Services固定コミット: `0f6210ed5156126b782e1c43249063a477484b20`
+- Object Detectionテンプレート: https://github.com/STMicroelectronics/STM32N6-GettingStarted-ObjectDetection
+- Object Detection固定コミット: `7ae96b5452183664c0d9b3dfe06a82a6ed0e59cb` (`v2.3.0`)
+- 使用範囲: ST-YOLOXモデルと重み、Neural-ART生成コード、物体検出後処理
+- ライセンス: 各ソースファイルおよび上記リポジトリのライセンスを参照
+
 ## μT-Kernel 3.0 BSP2 / μT-Kernel 3.0
 
 - 提供者: TRON Forum
@@ -32,4 +42,3 @@
 - ライセンス: `Drivers/STM32N6xx_HAL_Driver/LICENSE.txt`、
   `Drivers/CMSIS/LICENSE`、`Drivers/CMSIS/Device/ST/STM32N6xx/LICENSE.txt`、
   および各ファイルのライセンス表示を参照
-

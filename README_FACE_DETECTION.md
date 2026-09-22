@@ -1,5 +1,8 @@
 # SAFRAME — STM32N6 リアルタイム・プライバシーフィルタ
 
+> この文書はBlazeFace版の記録です。現在のModel Zoo物体検出版は
+> [README_OBJECT_DETECTION.md](README_OBJECT_DETECTION.md)を参照してください。
+
 TRONプログラミングコンテスト向けのSTM32N6570-DK用プロジェクトです。計画書の
 最初のマイルストーンとして、カメラ映像の顔検知と、検知領域への黒マスク／
 モザイク処理を実装しています。映像と処理結果はボード上のLCDへ表示します。

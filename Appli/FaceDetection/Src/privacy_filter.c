@@ -123,15 +123,15 @@ void PrivacyFilter_Render(const PrivacyFrameResult *result,
 
   PrivacyFilter_Clear(target);
 
-  uint32_t count = result->face_count;
-  if (count > PRIVACY_MAX_FACES)
+  uint32_t count = result->detection_count;
+  if (count > PRIVACY_MAX_DETECTIONS)
   {
-    count = PRIVACY_MAX_FACES;
+    count = PRIVACY_MAX_DETECTIONS;
   }
 
   for (uint32_t i = 0; i < count; i++)
   {
-    const PrivacyRoi *roi = &result->faces[i];
+    const PrivacyRoi *roi = &result->detections[i];
     if ((roi->width == 0U) || (roi->height == 0U) ||
         (roi->x < 0) || (roi->y < 0))
     {

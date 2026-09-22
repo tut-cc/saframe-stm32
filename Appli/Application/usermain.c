@@ -32,14 +32,14 @@ EXPORT INT usermain(void)
   task_id = tk_cre_tsk(&face_detection_task_config);
   if (task_id <= 0)
   {
-    tm_putstring((UB *)"Failed to create face detection task.\n");
+    tm_putstring((UB *)"Failed to create object detection task.\n");
     return task_id;
   }
 
   ER ercd = tk_sta_tsk(task_id, 0);
   if (ercd != E_OK)
   {
-    tm_putstring((UB *)"Failed to start face detection task.\n");
+    tm_putstring((UB *)"Failed to start object detection task.\n");
     return ercd;
   }
 

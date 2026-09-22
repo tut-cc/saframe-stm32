@@ -13,8 +13,8 @@ static void test_mask_and_clear(void)
     .overlay_height = 5U,
   };
   const PrivacyFrameResult result = {
-    .face_count = 1U,
-    .faces = {{.x = 2, .y = 1, .width = 3U, .height = 2U}},
+    .detection_count = 1U,
+    .detections = {{.x = 2, .y = 1, .width = 3U, .height = 2U}},
   };
 
   for (uint32_t i = 0; i < 30U; i++)
@@ -49,8 +49,8 @@ static void test_mosaic_color_and_clipping(void)
     .background_height = 4U,
   };
   const PrivacyFrameResult result = {
-    .face_count = 2U,
-    .faces = {
+    .detection_count = 2U,
+    .detections = {
       {.x = 0, .y = 0, .width = 4U, .height = 4U},
       {.x = 3, .y = 3, .width = 20U, .height = 20U},
     },
@@ -73,8 +73,8 @@ static void test_invalid_roi_is_ignored(void)
     .overlay_height = 2U,
   };
   const PrivacyFrameResult result = {
-    .face_count = 1U,
-    .faces = {{.x = -1, .y = 0, .width = 1U, .height = 1U}},
+    .detection_count = 1U,
+    .detections = {{.x = -1, .y = 0, .width = 1U, .height = 1U}},
   };
 
   PrivacyFilter_Render(&result, PRIVACY_MODE_MASK, &target);

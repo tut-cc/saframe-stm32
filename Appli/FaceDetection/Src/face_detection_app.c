@@ -85,10 +85,10 @@ Rectangle_TypeDef lcd_fg_area = {
   .YSize = LCD_FG_HEIGHT,
 };
 
-#if POSTPROCESS_TYPE == POSTPROCESS_FD_BLAZEFACE_UI
-  fd_blazeface_pp_static_param_t pp_params;
-#elif POSTPROCESS_TYPE == POSTPROCESS_FD_YUNET_UI
-  fd_yunet_pp_static_param_t pp_params;
+#if POSTPROCESS_TYPE == POSTPROCESS_OD_ST_YOLOX_UI
+  od_st_yolox_pp_static_param_t pp_params;
+#elif POSTPROCESS_TYPE == POSTPROCESS_OD_YOLO_V8_UI
+  od_yolov8_pp_static_param_t pp_params;
 #else
   #error "PostProcessing type not supported"
 #endif
@@ -96,7 +96,7 @@ Rectangle_TypeDef lcd_fg_area = {
 stai_ptr nn_in;
 BSP_LCD_LayerConfig_t LayerConfig = {0};
 void* pp_input;
-fd_pp_out_t pp_output;
+od_pp_out_t pp_output;
 
 #define ALIGN_TO_16(value) (((value) + 15) & ~15)
 
@@ -142,7 +142,7 @@ static void set_clk_sleep_mode(void);
 static void IAC_Config(void);
 static void NeuralNetwork_init(uint32_t *nn_in_length, stai_ptr *nn_out, stai_size *number_output, int32_t nn_out_len[]);
 static void StartPrivacyTasks(void);
-static void PublishPrivacyResult(fd_pp_out_t *postprocess,
+static void PublishPrivacyResult(od_pp_out_t *postprocess,
                                  uint32_t frame_number,
                                  uint32_t inference_ms,
                                  uint32_t vision_ms);
@@ -196,10 +196,10 @@ void FaceDetection_Run(void)
   privacy_display_mutex_id = tk_cre_mtx(&display_mutex);
   assert(privacy_display_mutex_id > 0);
   RegisterApplicationInterrupts();
-  tm_putstring((UB *)"FD: application interrupts registered.\n");
+  tm_putstring((UB *)"OD: application interrupts registered.\n");
 
   const bool weights_valid = NetworkWeightsValid();
-  tm_printf((UB *)"FD: model weights at 0x%08x: %s.\n",
+  tm_printf((UB *)"OD: model weights at 0x%08x: %s.\n",
             NETWORK_WEIGHTS_ADDRESS, weights_valid ? "OK" : "MISSING OR INVALID");
 
   /*** NN Init ****************************************************************/
@@ -209,7 +209,7 @@ void FaceDetection_Run(void)
   int32_t nn_out_len[STAI_NETWORK_OUT_NUM] = {0};
 
   NeuralNetwork_init(&nn_in_len, nn_out, &number_output, nn_out_len);
-  tm_putstring((UB *)"FD: neural network initialized.\n");
+  tm_putstring((UB *)"OD: neural network initialized.\n");
 
   /*** Post Processing Init ***************************************************/
   stai_network_info info;
@@ -222,10 +222,10 @@ void FaceDetection_Run(void)
   /*** Camera Init ************************************************************/
   uint32_t pitch_nn = 0;
   CameraPipeline_Init(&lcd_bg_area.XSize, &lcd_bg_area.YSize, &pitch_nn);
-  tm_putstring((UB *)"FD: camera pipeline initialized.\n");
+  tm_putstring((UB *)"OD: camera pipeline initialized.\n");
 
   LCD_init();
-  tm_putstring((UB *)"FD: LCD foreground layer initialized.\n");
+  tm_putstring((UB *)"OD: LCD foreground layer initialized.\n");
 
   /* Start LCD Display camera pipe stream */
   CameraPipeline_DisplayPipe_Start(lcd_bg_buffer, CMW_MODE_CONTINUOUS);
@@ -233,7 +233,7 @@ void FaceDetection_Run(void)
   if (!weights_valid)
   {
     Display_Status("ERROR: program network_data.hex", UTIL_LCD_COLOR_RED);
-    tm_putstring((UB *)"FD: inference disabled; program Model/network_data.hex to XSPI2.\n");
+    tm_putstring((UB *)"OD: inference disabled; program Model/network_data.hex to XSPI2.\n");
     while (1)
     {
       CameraPipeline_IspUpdate();
@@ -241,8 +241,8 @@ void FaceDetection_Run(void)
     }
   }
 
-  Display_Status("FD: waiting for camera frame", UTIL_LCD_COLOR_YELLOW);
-  tm_putstring((UB *)"FD: display started; waiting for NN camera frame.\n");
+  Display_Status("OD: waiting for camera frame", UTIL_LCD_COLOR_YELLOW);
+  tm_putstring((UB *)"OD: display started; waiting for NN camera frame.\n");
   StartPrivacyTasks();
 
   /*** App Loop ***************************************************************/
@@ -264,7 +264,7 @@ void FaceDetection_Run(void)
                          TWF_ORW | TWF_BITCLR, &frame_pattern, CAMERA_FRAME_TIMEOUT_MS);
     if (ercd == E_TMOUT)
     {
-      tm_putstring((UB *)"FD: ERROR: timed out waiting for DCMIPP pipe 2.\n");
+      tm_putstring((UB *)"OD: ERROR: timed out waiting for DCMIPP pipe 2.\n");
       Display_Status("ERROR: NN camera timeout", UTIL_LCD_COLOR_RED);
       while (1)
       {
@@ -290,8 +290,8 @@ void FaceDetection_Run(void)
     ts[0] = vision_started_at;
     if (frame_count == 0U)
     {
-      Display_Status("FD: first inference running", UTIL_LCD_COLOR_GREEN);
-      tm_putstring((UB *)"FD: first NN camera frame received; starting inference.\n");
+      Display_Status("OD: first inference running", UTIL_LCD_COLOR_GREEN);
+      tm_putstring((UB *)"OD: first NN camera frame received; starting inference.\n");
     }
     /* run ATON inference */
     ret = stai_network_run(network_context, STAI_MODE_SYNC);
@@ -406,9 +406,9 @@ static bool NetworkWeightsValid(void)
     uint32_t offset;
     uint32_t expected;
   } signature[] = {
-    { 0x00000U, 0x0FBF1117U },
-    { 0x10000U, 0xDF29FD09U },
-    { 0x1A000U, 0x1E7AB7FDU },
+    { 0x00000U, 0xFC98FD05U },
+    { 0x10000U, 0x02F39FDDU },
+    { 0x1A000U, 0x0EF13CDFU },
   };
 
   for (uint32_t i = 0; i < (sizeof(signature) / sizeof(signature[0])); i++)
@@ -574,7 +574,7 @@ static void convert_point(float32_t xi, float32_t yi, int *xo, int *yo)
   *yo = lcd_bg_area.YSize * yi + lcd_bg_area.Y0;
 }
 
-static PrivacyRoi MakePrivacyRoi(const fd_pp_outBuffer_t *detection)
+static PrivacyRoi MakePrivacyRoi(const od_pp_outBuffer_t *detection)
 {
   int center_x, center_y;
   int width, height;
@@ -603,7 +603,7 @@ static PrivacyRoi MakePrivacyRoi(const fd_pp_outBuffer_t *detection)
   return roi;
 }
 
-static void PublishPrivacyResult(fd_pp_out_t *postprocess,
+static void PublishPrivacyResult(od_pp_out_t *postprocess,
                                  uint32_t frame_number,
                                  uint32_t inference_ms,
                                  uint32_t vision_ms)
@@ -614,14 +614,14 @@ static void PublishPrivacyResult(fd_pp_out_t *postprocess,
     .vision_ms = vision_ms,
   };
 
-  result.face_count = postprocess->nb_detect;
-  if (result.face_count > PRIVACY_MAX_FACES)
+  result.detection_count = (uint32_t)postprocess->nb_detect;
+  if (result.detection_count > PRIVACY_MAX_DETECTIONS)
   {
-    result.face_count = PRIVACY_MAX_FACES;
+    result.detection_count = PRIVACY_MAX_DETECTIONS;
   }
-  for (uint32_t i = 0; i < result.face_count; i++)
+  for (uint32_t i = 0; i < result.detection_count; i++)
   {
-    result.faces[i] = MakePrivacyRoi(&postprocess->pOutBuff[i]);
+    result.detections[i] = MakePrivacyRoi(&postprocess->pOutBuff[i]);
   }
 
   assert(tk_loc_mtx(privacy_result_mutex_id, TMO_FEVR) == E_OK);
@@ -702,8 +702,8 @@ static void PrivacyRenderTask(INT stacd, void *exinf)
 
     UTIL_LCD_SetTextColor(UTIL_LCD_COLOR_WHITE);
     UTIL_LCD_SetBackColor(0xA0000000);
-    UTIL_LCDEx_PrintfAt(0, LINE(1), CENTER_MODE, "%s | Faces %u",
-                       PrivacyFilter_ModeName(mode), result.face_count);
+    UTIL_LCDEx_PrintfAt(0, LINE(1), CENTER_MODE, "%s | Objects %u",
+                       PrivacyFilter_ModeName(mode), result.detection_count);
     UTIL_LCDEx_PrintfAt(0, LINE(20), CENTER_MODE, "AI %ums | Vision %ums | Draw %ums",
                        result.inference_ms, result.vision_ms, privacy_render_ms);
     UTIL_LCD_SetBackColor(0);
@@ -749,9 +749,9 @@ static void ControlMonitorTask(INT stacd, void *exinf)
       assert(tk_loc_mtx(privacy_result_mutex_id, TMO_FEVR) == E_OK);
       result = privacy_results[privacy_published_index];
       assert(tk_unl_mtx(privacy_result_mutex_id) == E_OK);
-      tm_printf((UB *)"FD: frame=%u mode=%s faces=%u ai=%ums vision=%ums draw=%ums.\n",
+      tm_printf((UB *)"OD: frame=%u mode=%s detections=%u ai=%ums vision=%ums draw=%ums.\n",
                 result.frame_number, PrivacyFilter_ModeName(privacy_mode),
-                result.face_count, result.inference_ms, result.vision_ms,
+                result.detection_count, result.inference_ms, result.vision_ms,
                 privacy_render_ms);
       last_log_at = now;
     }
