@@ -4,3 +4,5 @@
 /FSBL/Debug/
 /FSBL/Release/
 *.log
+/Appli/FaceDetection/Model/st_ai_output/
+/Appli/FaceDetection/Model/st_ai_ws/
