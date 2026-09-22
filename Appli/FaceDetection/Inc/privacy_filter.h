@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define PRIVACY_MAX_DETECTIONS  (10U)
+#define PRIVACY_MAX_FACES  (10U)
 
 typedef enum
 {
@@ -53,8 +53,8 @@ typedef struct
   uint32_t published_frames;
   uint32_t dropped_deadline;
   uint32_t consecutive_drops;
-  uint32_t detection_count;
-  PrivacyRoi detections[PRIVACY_MAX_DETECTIONS];
+  uint32_t face_count;
+  PrivacyRoi faces[PRIVACY_MAX_FACES];
 } PrivacyFrameResult;
 
 typedef struct

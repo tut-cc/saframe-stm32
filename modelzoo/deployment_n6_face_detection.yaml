@@ -1,0 +1,46 @@
+operation_mode: deployment
+
+model:
+  # Set MODEL_PATH to the pretrained, already per-channel/float-IO quantized
+  # yunetn_320_qdq_int8.onnx (see stm32ai-modelzoo/face_detection/yunet/
+  # Public_pretrainedmodel_public_dataset/widerface/yunetn_320/).
+  model_path: ${oc.env:MODEL_PATH}
+  model_type: yunet
+
+dataset:
+  class_names: [face]
+
+preprocessing:
+  resizing:
+    aspect_ratio: fit
+    interpolation: bilinear
+  color_mode: rgb
+
+postprocessing:
+  confidence_thresh: 0.5
+  NMS_thresh: 0.5
+  IoU_eval_thresh: 0.5
+  max_detection_boxes: 10
+  crop_stretch_percents: [0,40,0,40]
+
+tools:
+  stedgeai:
+    optimization: balanced
+    on_cloud: false
+    path_to_stedgeai: ${oc.env:STEDGEAI_PATH}
+  path_to_cubeIDE: ${oc.env:CUBEIDE_PATH}
+
+deployment:
+  c_project_path: ${oc.env:MODELZOO_SERVICES_ROOT}/application_code/face_detection/STM32N6/
+  IDE: GCC
+  verbosity: 1
+  hardware_setup:
+    serie: STM32N6
+    board: STM32N6570-DK
+
+mlflow:
+  uri: ./tf/src/experiments_outputs/mlruns
+
+hydra:
+  run:
+    dir: ./tf/src/experiments_outputs/${now:%Y_%m_%d_%H_%M_%S}

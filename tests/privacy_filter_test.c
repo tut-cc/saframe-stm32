@@ -13,8 +13,8 @@ static void test_mask_and_clear(void)
     .overlay_height = 5U,
   };
   const PrivacyFrameResult result = {
-    .detection_count = 1U,
-    .detections = {{.x = 2, .y = 1, .width = 3U, .height = 2U}},
+    .face_count = 1U,
+    .faces = {{.x = 2, .y = 1, .width = 3U, .height = 2U}},
   };
 
   for (uint32_t i = 0; i < 30U; i++)
@@ -49,8 +49,8 @@ static void test_mosaic_color_and_clipping(void)
     .background_height = 4U,
   };
   const PrivacyFrameResult result = {
-    .detection_count = 2U,
-    .detections = {
+    .face_count = 2U,
+    .faces = {
       {.x = 0, .y = 0, .width = 4U, .height = 4U},
       {.x = 3, .y = 3, .width = 20U, .height = 20U},
     },
@@ -73,8 +73,8 @@ static void test_invalid_roi_is_ignored(void)
     .overlay_height = 2U,
   };
   const PrivacyFrameResult result = {
-    .detection_count = 1U,
-    .detections = {{.x = -1, .y = 0, .width = 1U, .height = 1U}},
+    .face_count = 1U,
+    .faces = {{.x = -1, .y = 0, .width = 1U, .height = 1U}},
   };
 
   PrivacyFilter_Render(&result, PRIVACY_MODE_MASK, &target);
@@ -92,8 +92,8 @@ static void test_rgb565_mask_multiple_rois_and_clipping(void)
     frame[i] = (uint16_t)(i + 1U);
   }
   const PrivacyFrameResult result = {
-    .detection_count = 2U,
-    .detections = {
+    .face_count = 2U,
+    .faces = {
       {.x = 1, .y = 1, .width = 2U, .height = 2U},
       {.x = 5, .y = 3, .width = 8U, .height = 8U},
     },
@@ -120,8 +120,8 @@ static void test_rgb565_mosaic_and_zero_detections(void)
     }
   }
   PrivacyFrameResult result = {
-    .detection_count = 1U,
-    .detections = {{.x = 0, .y = 0, .width = 20U, .height = 20U}},
+    .face_count = 1U,
+    .faces = {{.x = 0, .y = 0, .width = 20U, .height = 20U}},
   };
 
   PrivacyFilter_ApplyRgb565(&result, PRIVACY_MODE_MOSAIC, frame, 20U, 20U);
@@ -131,7 +131,7 @@ static void test_rgb565_mosaic_and_zero_detections(void)
   assert(frame[(19U * 20U) + 19U] == 0xF800U);
 
   const uint16_t unchanged = frame[0];
-  result.detection_count = 0U;
+  result.face_count = 0U;
   PrivacyFilter_ApplyRgb565(&result, PRIVACY_MODE_MASK, frame, 20U, 20U);
   assert(frame[0] == unchanged);
 }

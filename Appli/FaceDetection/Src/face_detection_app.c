@@ -97,10 +97,10 @@ Rectangle_TypeDef lcd_fg_area = {
   .YSize = LCD_FG_HEIGHT,
 };
 
-#if POSTPROCESS_TYPE == POSTPROCESS_OD_ST_YOLOX_UI
-  od_st_yolox_pp_static_param_t pp_params;
-#elif POSTPROCESS_TYPE == POSTPROCESS_OD_YOLO_V8_UI
-  od_yolov8_pp_static_param_t pp_params;
+#if POSTPROCESS_TYPE == POSTPROCESS_FD_BLAZEFACE_UI
+  fd_blazeface_pp_static_param_t pp_params;
+#elif POSTPROCESS_TYPE == POSTPROCESS_FD_YUNET_UI
+  fd_yunet_pp_static_param_t pp_params;
 #else
   #error "PostProcessing type not supported"
 #endif
@@ -108,7 +108,7 @@ Rectangle_TypeDef lcd_fg_area = {
 stai_ptr nn_in;
 BSP_LCD_LayerConfig_t LayerConfig = {0};
 void* pp_input;
-od_pp_out_t pp_output;
+fd_pp_out_t pp_output;
 
 #define ALIGN_TO_16(value) (((value) + 15) & ~15)
 
@@ -171,7 +171,7 @@ static void PerformanceCounter_Init(void);
 static uint32_t PerformanceCounter_Now(void);
 static uint32_t PerformanceCounter_ToUs(uint32_t cycles);
 static uint32_t PerformanceCounter_DeadlineCycles(void);
-static void PublishPrivacyResult(od_pp_out_t *postprocess,
+static void PublishPrivacyResult(fd_pp_out_t *postprocess,
                                  uint32_t frame_number,
                                  uint32_t buffer_index,
                                  uint32_t deadline_started_cycles,
@@ -230,10 +230,10 @@ void FaceDetection_Run(void)
   privacy_display_mutex_id = tk_cre_mtx(&display_mutex);
   assert(privacy_display_mutex_id > 0);
   RegisterApplicationInterrupts();
-  tm_putstring((UB *)"OD: application interrupts registered.\n");
+  tm_putstring((UB *)"FD: application interrupts registered.\n");
 
   const bool weights_valid = NetworkWeightsValid();
-  tm_printf((UB *)"OD: model weights at 0x%08x: %s.\n",
+  tm_printf((UB *)"FD: model weights at 0x%08x: %s.\n",
             NETWORK_WEIGHTS_ADDRESS, weights_valid ? "OK" : "MISSING OR INVALID");
 
   /*** NN Init ****************************************************************/
@@ -243,7 +243,7 @@ void FaceDetection_Run(void)
   int32_t nn_out_len[STAI_NETWORK_OUT_NUM] = {0};
 
   NeuralNetwork_init(&nn_in_len, nn_out, &number_output, nn_out_len);
-  tm_putstring((UB *)"OD: neural network initialized.\n");
+  tm_putstring((UB *)"FD: neural network initialized.\n");
 
   /*** Post Processing Init ***************************************************/
   stai_network_info info;
@@ -256,15 +256,15 @@ void FaceDetection_Run(void)
   /*** Camera Init ************************************************************/
   uint32_t pitch_nn = 0;
   CameraPipeline_Init(&lcd_bg_area.XSize, &lcd_bg_area.YSize, &pitch_nn);
-  tm_putstring((UB *)"OD: camera pipeline initialized.\n");
+  tm_putstring((UB *)"FD: camera pipeline initialized.\n");
 
   LCD_init();
-  tm_putstring((UB *)"OD: LCD foreground layer initialized.\n");
+  tm_putstring((UB *)"FD: LCD foreground layer initialized.\n");
 
   if (!weights_valid)
   {
     Display_Status("ERROR: program network_data.hex", UTIL_LCD_COLOR_RED);
-    tm_putstring((UB *)"OD: inference disabled; program Model/network_data.hex to XSPI2.\n");
+    tm_putstring((UB *)"FD: inference disabled; program Model/network_data.hex to XSPI2.\n");
     while (1)
     {
       CameraPipeline_IspUpdate();
@@ -272,8 +272,8 @@ void FaceDetection_Run(void)
     }
   }
 
-  Display_Status("OD: waiting for camera frame", UTIL_LCD_COLOR_YELLOW);
-  tm_putstring((UB *)"OD: priming camera into a private buffer.\n");
+  Display_Status("FD: waiting for camera frame", UTIL_LCD_COLOR_YELLOW);
+  tm_putstring((UB *)"FD: priming camera into a private buffer.\n");
   if (!PrimeCamera())
   {
     Display_Status("ERROR: camera prime timeout", UTIL_LCD_COLOR_RED);
@@ -283,7 +283,7 @@ void FaceDetection_Run(void)
       (void)tk_dly_tsk(100);
     }
   }
-  tm_putstring((UB *)"OD: camera primed; waiting for snapshot pipes.\n");
+  tm_putstring((UB *)"FD: camera primed; waiting for snapshot pipes.\n");
   StartPrivacyTasks();
 
   /*** App Loop ***************************************************************/
@@ -314,7 +314,7 @@ void FaceDetection_Run(void)
                          TWF_ANDW | TWF_BITCLR, &frame_pattern, CAMERA_FRAME_TIMEOUT_MS);
     if (ercd == E_TMOUT)
     {
-      tm_printf((UB *)"OD: ERROR: snapshot timeout (pipe1=%u pipe2=%u).\n",
+      tm_printf((UB *)"FD: ERROR: snapshot timeout (pipe1=%u pipe2=%u).\n",
                 camera_pipe_frames[DCMIPP_PIPE1], camera_pipe_frames[DCMIPP_PIPE2]);
       Display_Status("ERROR: camera timeout", UTIL_LCD_COLOR_RED);
       while (1)
@@ -345,8 +345,8 @@ void FaceDetection_Run(void)
     ts[0] = vision_started_cycles;
     if (frame_count == 0U)
     {
-      Display_Status("OD: first inference running", UTIL_LCD_COLOR_GREEN);
-      tm_putstring((UB *)"OD: first NN camera frame received; starting inference.\n");
+      Display_Status("FD: first inference running", UTIL_LCD_COLOR_GREEN);
+      tm_putstring((UB *)"FD: first NN camera frame received; starting inference.\n");
     }
     /* run ATON inference */
     g_app_diagnostic_frame = frame_count + 1U;
@@ -489,14 +489,18 @@ static void RegisterApplicationInterrupts(void)
 
 static bool NetworkWeightsValid(void)
 {
+  /* Signature of the YuNet (yunetn_320_qdq_int8.onnx) network_data.hex,
+   * generated via Model/generate-n6-model_STM32N6570-DK.sh. The weights blob
+   * is only ~94 KB (vs. ~1.2 MB for ST-YOLOX), so the offsets are closer
+   * together and stay within its smaller address span. */
   static const struct
   {
     uint32_t offset;
     uint32_t expected;
   } signature[] = {
-    { 0x00000U, 0xFC98FD05U },
-    { 0x10000U, 0x02F39FDDU },
-    { 0x1A000U, 0x0EF13CDFU },
+    { 0x00000U, 0xFC31952DU },
+    { 0x08000U, 0x2117D020U },
+    { 0x16000U, 0x0502F34BU },
   };
 
   for (uint32_t i = 0; i < (sizeof(signature) / sizeof(signature[0])); i++)
@@ -662,7 +666,7 @@ static void convert_point(float32_t xi, float32_t yi, int *xo, int *yo)
   *yo = lcd_bg_area.YSize * yi;
 }
 
-static PrivacyRoi MakePrivacyRoi(const od_pp_outBuffer_t *detection)
+static PrivacyRoi MakePrivacyRoi(const fd_pp_outBuffer_t *detection)
 {
   int center_x, center_y;
   int width, height;
@@ -691,7 +695,7 @@ static PrivacyRoi MakePrivacyRoi(const od_pp_outBuffer_t *detection)
   return roi;
 }
 
-static void PublishPrivacyResult(od_pp_out_t *postprocess,
+static void PublishPrivacyResult(fd_pp_out_t *postprocess,
                                  uint32_t frame_number,
                                  uint32_t buffer_index,
                                  uint32_t deadline_started_cycles,
@@ -711,14 +715,14 @@ static void PublishPrivacyResult(od_pp_out_t *postprocess,
     .vision_us = vision_us,
   };
 
-  result.detection_count = (uint32_t)postprocess->nb_detect;
-  if (result.detection_count > PRIVACY_MAX_DETECTIONS)
+  result.face_count = (uint32_t)postprocess->nb_detect;
+  if (result.face_count > PRIVACY_MAX_FACES)
   {
-    result.detection_count = PRIVACY_MAX_DETECTIONS;
+    result.face_count = PRIVACY_MAX_FACES;
   }
-  for (uint32_t i = 0; i < result.detection_count; i++)
+  for (uint32_t i = 0; i < result.face_count; i++)
   {
-    result.detections[i] = MakePrivacyRoi(&postprocess->pOutBuff[i]);
+    result.faces[i] = MakePrivacyRoi(&postprocess->pOutBuff[i]);
   }
 
   assert(tk_loc_mtx(privacy_result_mutex_id, TMO_FEVR) == E_OK);
@@ -864,8 +868,8 @@ static void PrivacyRenderTask(INT stacd, void *exinf)
 
     UTIL_LCD_SetTextColor(UTIL_LCD_COLOR_WHITE);
     UTIL_LCD_SetBackColor(0xA0000000);
-    UTIL_LCDEx_PrintfAt(0, LINE(1), CENTER_MODE, "%s | Objects %u | %s",
-                       PrivacyFilter_ModeName(mode), result.detection_count,
+    UTIL_LCDEx_PrintfAt(0, LINE(1), CENTER_MODE, "%s | Faces %u | %s",
+                       PrivacyFilter_ModeName(mode), result.face_count,
                        publish ? "PUBLISHED" : "DROPPED");
     UTIL_LCDEx_PrintfAt(0, LINE(20), CENTER_MODE, "AI %uus | Total %uus | Drops %u",
                        result.inference_us, result.total_us, privacy_dropped_deadline);
@@ -933,11 +937,11 @@ static void ControlMonitorTask(INT stacd, void *exinf)
       assert(tk_unl_mtx(privacy_result_mutex_id) == E_OK);
       if (result_valid)
       {
-        tm_printf((UB *)"OD: frame=%u mode=%s detections=%u capture=%uus ai=%uus pp=%uus "
+        tm_printf((UB *)"FD: frame=%u mode=%s faces=%u capture=%uus ai=%uus pp=%uus "
                          "vision=%uus inv=%uus filter=%uus clean=%uus render=%uus total=%uus "
                          "ltdc=%uus vblank=%uus published=%u dropped=%u consecutive=%u.\n",
                   result.frame_number, PrivacyFilter_ModeName(result.applied_mode),
-                  result.detection_count, result.capture_us, result.inference_us,
+                  result.face_count, result.capture_us, result.inference_us,
                   result.postprocess_us, result.vision_us,
                   result.cache_invalidate_us, result.filter_us, result.cache_clean_us,
                   result.render_us, result.total_us, result.ltdc_us, result.vblank_us,

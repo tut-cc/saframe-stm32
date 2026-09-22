@@ -23,6 +23,29 @@
 - 使用範囲: ST-YOLOXモデルと重み、Neural-ART生成コード、物体検出後処理
 - ライセンス: 各ソースファイルおよび上記リポジトリのライセンスを参照
 
+## STM32 AI Model Zoo — YuNet face detection
+
+- 提供者: STMicroelectronics
+- モデル: https://github.com/STMicroelectronics/stm32ai-modelzoo
+  （`face_detection/yunet/Public_pretrainedmodel_public_dataset/widerface/yunetn_320/yunetn_320_qdq_int8.onnx`）
+- 取得時コミット: `1423c78953a830903485135febe1dd98ff31aed8`
+- 後処理実装（`fd_pp_yunet.c` / `app_postprocess_fd_yunet_ui.c`）と
+  Neural-ART生成設定（`user_neuralart_STM32N6570-DK.json` /
+  `my_mpools/stm32n6-app2_STM32N6570-DK.mpool`）は、上記「STM32N6 Getting
+  Started — Face Detection」と同じ固定コミット（`45faf18539c037a4cb766d2824041d9eba201519`）
+  から取得（内容が完全一致することを確認済み）
+- 使用範囲: YuNetモデルと重み、Neural-ART生成コード、顔検出後処理
+- ライセンス: 各ソースファイルおよび上記リポジトリのライセンスを参照
+- `Vendor/Postprocess/Inc/fd_yunet_anchors_{32,16,8}.h`（グリッドアンカー座標
+  テーブル）は、通常はModel Zoo Servicesのデプロイパイプラインが生成する
+  ファイルだが、このリポジトリでは
+  `STMicroelectronics/stm32ai-modelzoo-services`
+  （`face_detection/tf/src/postprocessing/postprocess.py`の
+  `generate_yunet_anchor()`、上記と同じ固定コミット）のアルゴリズムを
+  Pythonデプロイパイプライン自体は動かさずに
+  [tools/generate_yunet_anchors.py](tools/generate_yunet_anchors.py) として
+  再実装し、その出力として生成したものである
+
 ## μT-Kernel 3.0 BSP2 / μT-Kernel 3.0
 
 - 提供者: TRON Forum

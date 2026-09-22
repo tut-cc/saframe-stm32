@@ -1,56 +1,30 @@
-# SAFRAME — STM32N6 リアルタイム・プライバシーフィルタ
+# SAFRAME — YuNet顔検出
 
-> この文書はBlazeFace版の記録です。現在のModel Zoo物体検出版は
-> [README_OBJECT_DETECTION.md](README_OBJECT_DETECTION.md)を参照してください。
+STM32N6570-DK上のμT-Kernel 3.0 BSP2で、カメラ画像をNeural-ARTへ入力し、
+検出した顔領域をLCD上でマスクまたはモザイク化します。
 
-TRONプログラミングコンテスト向けのSTM32N6570-DK用プロジェクトです。計画書の
-最初のマイルストーンとして、カメラ映像の顔検知と、検知領域への黒マスク／
-モザイク処理を実装しています。映像と処理結果はボード上のLCDへ表示します。
+## 現在の固定構成
 
-## 現在できること
+- モデル: YuNet（`yunetn_320_qdq_int8.onnx`）、320 x 320、UINT8入力／INT8出力、
+  face 1クラス、5キーポイント
+- 生成元: STM32 AI Model Zoo（`STMicroelectronics/stm32ai-modelzoo`
+  `face_detection/yunet/`）のプリトレイン済みモデルと、
+  `STMicroelectronics/stm32ai-modelzoo-services` の `face_detection` ユースケース
+- 後処理: confidence 0.5、NMS 0.5、最大10件（`Appli/FaceDetection/Vendor/Postprocess/Src/fd_pp_yunet.c`、
+  `STMicroelectronics/STM32N6-GettingStarted-FaceDetection` から移植）
+- 入出力: IMX335カメラ、STM32N6570-DK LCD
+- 実行: Vision、Render、Control/Monitorの3つのμT-Kernelタスク
 
-- IMX335カメラ映像からBlazeFace（128 x 128、UINT8）をNeural-ARTで実行
-- 顔領域を15%拡張し、LCDの表示範囲内へクリップ
-- 黒マスク、または16 x 16画素単位のモザイクをARGB4444前景レイヤへ描画
-- STM32N6570-DKの青いユーザーボタン `B2` でモードを切替
-- μT-Kernel 3.0のタスク、イベントフラグ、優先度継承mutexで処理を分離
-- T-Monitorへフレーム番号、検出数、AI／画像処理／描画時間を1秒ごとに出力
+`develop/add-modelzoo-object-detection` ブランチのST-YOLOX物体検出構成から、
+モデル生成物と後処理をYuNet顔検出構成へ置き換えています。既存のカメラ、LCD、
+Neural-ARTランタイム、dev-boot構成は維持しています。詳しいモデル調査の経緯は
+[MODEL_PROVENANCE.md](MODEL_PROVENANCE.md) を参照してください。
 
-起動時のモードは `MASK` です。ボタンを押すたびに `MASK` と `MOSAIC` が
-切り替わります。
+## ビルドと実行
 
-## ソフトウェア構成
-
-| μT-Kernelタスク | 優先度 | 役割 |
-|---|---:|---|
-| Vision | 5 | カメラ取得、NPU推論、後処理、顔ROIの発行 |
-| Render | 8 | 最新ROIのマスク／モザイク描画、LCD反映 |
-| Control/Monitor | 12 | B2のポーリングとデバウンス、統計ログ |
-
-DCMIPPのフレーム完了は割り込みからイベントフラグでVisionタスクへ通知します。
-VisionとRenderの受け渡しはダブルバッファ化した検出結果だけに限定し、Renderが
-遅れた場合は古い結果を溜めず、最新結果を描画します。LCDと結果共有部は別々の
-優先度継承mutexで保護しています。
-
-## 採用した開発環境
-
-STM32CubeIDEを採用しています。ST公式サンプル、CubeMX設定、FSBL、デバッガの
-構成をそのまま活用でき、コンテスト提出後も再現しやすいためです。
-
-- STM32CubeIDE 2.1.1
-- GNU Tools for STM32 14.3.rel1
-- STM32CubeProgrammer 2.22.0
-- STM32N6570-DK（Development lifecycle）
-
-## 最短のビルド／実行手順
-
-1. STM32CubeIDEで `File > Import... > General > Existing Projects into Workspace`
-   を開き、このリポジトリのルートを指定します。
-2. 親プロジェクト `mtk3bsp2_stm32n657`、`mtk3bsp2_stm32n657_Appli`、
-   `mtk3bsp2_stm32n657_FSBL` の3つをインポートします。親プロジェクトは
-   μT-Kernelのインクルードパス解決に必要です。
-3. AppliとFSBLを `Debug` 構成にして `Project > Build All` を実行します。
-4. 初回だけ、次の要領でモデル重みを外部Flashへ書き込みます。
+1. STM32CubeIDEへルート、Appli、FSBLの3プロジェクトをimportします。
+2. AppliとFSBLをDebug構成でビルドします。
+3. Development modeで、モデル重みを外部NORへ一度書き込みます。
 
 ```bash
 export STM32N6_LOADER="<STM32CubeProgrammer>/bin/ExternalLoader/MX66UW1G45G_STM32N6570-DK.stldr"
@@ -58,18 +32,69 @@ STM32_Programmer_CLI -c port=SWD mode=HOTPLUG -el "$STM32N6_LOADER" -hardRst \
   -w Appli/FaceDetection/Model/network_data.hex
 ```
 
-5. `Appli/mtk3bsp2_stm32n657_Appli Debug.launch` からデバッグを開始します。
-   この構成はFSBLとApplicationの両方をロードします。`F8`で `usermain` から
-   実行を再開します。
-6. 必要ならST-LINK Virtual COM Portを `115200 bps, 8-N-1` で開きます。
+4. `Appli/mtk3bsp2_stm32n657_Appli Debug.launch`を開始し、`usermain`で停止後に
+   Resumeします。T-Monitorコンソールは115200 bps、8-N-1です。
+5. B2を押すとMASKとMOSAICが切り替わります。
 
-詳細な書込み、デバッグ、診断方法は
-[Face Detection統合手順](Appli/FaceDetection/README.md)を参照してください。
+## モデル生成物の再生成
 
-## テスト
+`Appli/FaceDetection/Model/` の`network.c`、`network_data.hex`等は、
+`STMicroelectronics/STM32N6-GettingStarted-FaceDetection`の
+`Model/generate-n6-model_STM32N6570-DK.sh`を参考にした
+[Model/generate-n6-model_STM32N6570-DK.sh](Appli/FaceDetection/Model/generate-n6-model_STM32N6570-DK.sh)
+で、ローカルの`stedgeai`から直接生成できます（STEdgeAI 4.0で生成・確認済み）。
 
-画像フィルタ部分はHALやμT-Kernelに依存しないCモジュールです。PC上では次で
-境界チェックを含むテストを実行できます。
+```bash
+Appli/FaceDetection/Model/generate-n6-model_STM32N6570-DK.sh \
+  <path-to>/yunetn_320_qdq_int8.onnx
+```
+
+`yunetn_320_qdq_int8.onnx`は
+`STMicroelectronics/stm32ai-modelzoo`の
+`face_detection/yunet/Public_pretrainedmodel_public_dataset/widerface/yunetn_320/`
+から取得します（Git LFS管理）。生成には`stedgeai`と`arm-none-eabi-objcopy`が
+PATHに必要です。スクリプトは`Model/`直下の`network.c`、`network_ecblobs.h`、
+`stai_network.c/h`、`network_data.xSPI2.bin`、`network_data.hex`を上書きします。
+同ディレクトリの`user_neuralart_STM32N6570-DK.json`と
+`my_mpools/stm32n6-app2_STM32N6570-DK.mpool`はSTM32N6570-DKボード固定の
+Neural-ART設定で、モデルに依存せず流用できます。
+
+再生成後は、`Appli/FaceDetection/Src/face_detection_app.c`の
+`NetworkWeightsValid()`にある署名テーブル（`network_data.hex`先頭の
+既知オフセットの値）を新しい`network_data.hex`から採り直してください。
+
+生成された`Model/stai_network.h`から`AI_FD_YUNET_PP_IMG_SIZE`（320）、
+`AI_FD_YUNET_PP_NB_KEYPOINTS`（5）、`AI_FD_YUNET_PP_OUT_{32,16,8}_NB_BOXES`
+（100 / 400 / 1600、`STAI_NETWORK_OUT_*`の出力形状から算出）は`app_config.h`に
+反映済みです。
+
+`Vendor/Postprocess/Inc/fd_yunet_anchors_{32,16,8}.h`（グリッドセルのアンカー
+座標テーブル）は、本来`stm32ai-modelzoo-services`の`face_detection`
+デプロイパイプラインが生成するファイルですが、その生成アルゴリズム
+（`generate_yunet_anchor()`、入力サイズとstride列だけで決まる純粋なグリッド
+計算）を [tools/generate_yunet_anchors.py](tools/generate_yunet_anchors.py) として
+再実装し、Pythonパイプライン自体は動かさずに直接生成・配置済みです
+（依存パッケージ・Cコンパイラ・実機は不要。詳細は
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 参照）。
+モデル自体を差し替える場合は、次で再生成してください。
+
+```bash
+python3 tools/generate_yunet_anchors.py
+```
+
+（`IMG_SIZE`/`STRIDES`/`NB_BOXES`はスクリプト先頭にハードコードしているため、
+入力解像度が変わるモデルに差し替える場合はそこも合わせて修正してください。）
+
+`stm32ai-modelzoo-services`の完全なPythonデプロイパイプライン
+（[modelzoo/deployment_n6_face_detection.yaml](modelzoo/deployment_n6_face_detection.yaml)、
+[tools/import_modelzoo_face_detection.sh](tools/import_modelzoo_face_detection.sh)）も
+代替手段として残していますが、こちらは重いPython依存関係（hydra/omegaconf/
+onnxruntime等）に加え、実機（STM32N6570-DK、ST-Link接続）への書き込みまで
+一括で行う想定のもので、アンカーヘッダだけが目的なら不要です。
+
+## 確認済み範囲と残作業
+
+ホスト上のプライバシーフィルタ境界テストは次で実行できます。
 
 ```bash
 cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
@@ -78,16 +103,21 @@ cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
 ASAN_OPTIONS=detect_leaks=0 /tmp/privacy_filter_test
 ```
 
-## 現段階の制約
+このセッションでは以下を実装済みです:
+- `fd_pp_yunet.c` / `app_postprocess_fd_yunet_ui.c`
+  （`STM32N6-GettingStarted-FaceDetection` から移植した後処理実装）
+- `face_detection_app.c` / `privacy_filter.c` / `privacy_filter.h` の
+  `fd_pp_out_t`（顔検出・キーポイント対応）ベースへの置き換え
+- `app_config.h` の `POSTPROCESS_FD_YUNET_UI` への切り替え
+- `Appli/FaceDetection/Model/` 配下の実際のNeural-ART生成物
+  （`stedgeai generate`をローカル実行して生成。`network.c`、`network_data.hex`等）
+  と、`NetworkWeightsValid()`の署名テーブル更新
+- `Vendor/Postprocess/Inc/fd_yunet_anchors_{32,16,8}.h`（アンカーテーブル）の生成
+  （`tools/generate_yunet_anchors.py`。`fd_pp_yunet.c`と
+  `app_postprocess_fd_yunet_ui.c`がこのヘッダを含めて実際にコンパイルできることを
+  `arm-none-eabi-gcc -fsyntax-only`で確認済み）
 
-- 出力先はLCDのみです。USB UVCや録画出力は未実装です。
-- 最大同時顔数は3です。
-- 現段階は顔検出結果に基づく最新ROI描画です。計画書の最終目標である
-  「同一フレームの出力保証」や異常時の全面マスクは、次段階で実装します。
-- 実機のカメラ／NPU／LCD連続動作とフレームレートは実機確認が必要です。
-
-## 使用した既存資源
-
-STMicroelectronicsのFace Detectionサンプルと、TRON ForumのμT-Kernel 3.0
-BSP2を基礎にしています。出典、固定バージョン、ライセンスは
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)に記載しています。
+未着手・未確認の項目:
+- 実機ビルド（STM32CubeIDEでのフルビルド）・実機での連続動作、フレームレート、
+  320 x 320モデルの推論時間（このサンドボックス環境には物理ボードが無いため
+  未実施）

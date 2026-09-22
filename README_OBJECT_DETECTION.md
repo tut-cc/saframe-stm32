@@ -1,5 +1,8 @@
 # SAFRAME — STM32 Model Zoo物体検出
 
+> この文書は物体検出（ST-YOLOX）版の記録です。現在のYuNet顔検出版は
+> [README_FACE_DETECTION.md](README_FACE_DETECTION.md)を参照してください。
+
 STM32N6570-DK上のμT-Kernel 3.0 BSP2で、カメラ画像をNeural-ARTへ入力し、
 検出したperson領域をLCD上でマスクまたはモザイク化します。
 
