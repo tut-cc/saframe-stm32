@@ -148,6 +148,7 @@ static volatile uint32_t privacy_render_ms;
 static volatile uint32_t privacy_published_frames;
 static volatile uint32_t privacy_dropped_deadline;
 static volatile uint32_t privacy_consecutive_drops;
+static volatile uint32_t camera_pipe_frames[3];
 
 static void SystemClock_Config(void);
 static void NPURam_enable(void);
@@ -160,6 +161,7 @@ static void set_clk_sleep_mode(void);
 static void IAC_Config(void);
 static void NeuralNetwork_init(uint32_t *nn_in_length, stai_ptr *nn_out, stai_size *number_output, int32_t nn_out_len[]);
 static void StartPrivacyTasks(void);
+static bool PrimeCamera(void);
 static void PublishPrivacyResult(od_pp_out_t *postprocess,
                                  uint32_t frame_number,
                                  uint32_t buffer_index,
@@ -259,7 +261,17 @@ void FaceDetection_Run(void)
   }
 
   Display_Status("OD: waiting for camera frame", UTIL_LCD_COLOR_YELLOW);
-  tm_putstring((UB *)"OD: display started; waiting for NN camera frame.\n");
+  tm_putstring((UB *)"OD: priming camera into a private buffer.\n");
+  if (!PrimeCamera())
+  {
+    Display_Status("ERROR: camera prime timeout", UTIL_LCD_COLOR_RED);
+    while (1)
+    {
+      CameraPipeline_IspUpdate();
+      (void)tk_dly_tsk(100);
+    }
+  }
+  tm_putstring((UB *)"OD: camera primed; waiting for snapshot pipes.\n");
   StartPrivacyTasks();
 
   /*** App Loop ***************************************************************/
@@ -289,7 +301,8 @@ void FaceDetection_Run(void)
                          TWF_ANDW | TWF_BITCLR, &frame_pattern, CAMERA_FRAME_TIMEOUT_MS);
     if (ercd == E_TMOUT)
     {
-      tm_putstring((UB *)"OD: ERROR: timed out waiting for DCMIPP snapshot pipes.\n");
+      tm_printf((UB *)"OD: ERROR: snapshot timeout (pipe1=%u pipe2=%u).\n",
+                camera_pipe_frames[DCMIPP_PIPE1], camera_pipe_frames[DCMIPP_PIPE2]);
       Display_Status("ERROR: camera timeout", UTIL_LCD_COLOR_RED);
       while (1)
       {
@@ -397,11 +410,31 @@ void FaceDetection_HardwareInit(void)
 
 void FaceDetection_CameraFrameCallback(uint32_t pipe)
 {
+  if (pipe <= DCMIPP_PIPE2)
+  {
+    camera_pipe_frames[pipe]++;
+  }
   if (camera_frame_flag_id > 0)
   {
     const UINT event = (pipe == DCMIPP_PIPE1) ? DISPLAY_FRAME_READY : NN_FRAME_READY;
     (void)tk_set_flg(camera_frame_flag_id, event);
   }
+}
+
+static bool PrimeCamera(void)
+{
+  UINT frame_pattern = 0U;
+  CameraPipeline_DisplayPipe_Start(lcd_bg_buffer[lcd_bg_working_idx], CMW_MODE_SNAPSHOT);
+  const ER ercd = tk_wai_flg(camera_frame_flag_id, DISPLAY_FRAME_READY,
+                             TWF_ORW | TWF_BITCLR, &frame_pattern,
+                             CAMERA_FRAME_TIMEOUT_MS);
+  if (ercd != E_OK)
+  {
+    tm_printf((UB *)"OD: ERROR: camera prime failed (ercd=%d pipe1=%u pipe2=%u).\n",
+              ercd, camera_pipe_frames[DCMIPP_PIPE1], camera_pipe_frames[DCMIPP_PIPE2]);
+    return false;
+  }
+  return true;
 }
 
 static void CSI_InterruptHandler(UINT intno)
