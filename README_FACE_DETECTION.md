@@ -2,11 +2,15 @@
 
 STM32N6570-DK上のμT-Kernel 3.0 BSP2で、カメラ画像をNeural-ARTへ入力し、
 検出した顔領域をLCD上でマスクまたはモザイク化します。
+この文書はコミット`e9b716a`時点の実装スナップショットです。
+設計上の判断理由は
+[ADR-0006](docs/adr/0006-publish-only-sanitized-frames.md)と
+[ADR-0007](docs/adr/0007-use-yunet-for-face-privacy.md)を参照してください。
 
 ## 現在の固定構成
 
-- モデル: YuNet（`yunetn_320_qdq_int8.onnx`）、320 x 320、UINT8入力／INT8出力、
-  face 1クラス、5キーポイント
+- モデル: YuNet（`yunetn_320_qdq_int8.onnx`）、320 x 320、
+  UINT8 channel-last入力、12個のINT8出力、face 1クラス、5キーポイント
 - 生成元: STM32 AI Model Zoo（`STMicroelectronics/stm32ai-modelzoo`
   `face_detection/yunet/`）のプリトレイン済みモデルと、
   `STMicroelectronics/stm32ai-modelzoo-services` の `face_detection` ユースケース
@@ -16,6 +20,7 @@ STM32N6570-DK上のμT-Kernel 3.0 BSP2で、カメラ画像をNeural-ARTへ入�
 - 入出力: IMX335カメラ、STM32N6570-DK LCD
 - 画角: 表示PipeとNN Pipeで同じ中央正方形をクロップ（左右は表示されません）
 - 実行: Vision、Render、Control/Monitorの3つのμT-Kernelタスク
+- Neural-ARTランタイム: LL_ATON 1.1.3 dev275 / NetworkRuntime1201
 
 `develop/add-modelzoo-object-detection` ブランチのST-YOLOX物体検出構成から、
 モデル生成物と後処理をYuNet顔検出構成へ置き換えています。既存のカメラ、LCD、
@@ -28,11 +33,37 @@ ST Edge AI 4.0.1付属のLL_ATON 1.1.3 dev275 / NetworkRuntime1201へ更新し�
 詳しいモデル調査の経緯は
 [MODEL_PROVENANCE.md](MODEL_PROVENANCE.md) を参照してください。
 
-ADR-0006の安全化済みフレーム公開ゲートも維持しています。カメラ画像は
-非公開バッファへ取得し、YuNet検出後のMASK/MOSAICが33,000 us以内に完了した
-フレームだけをLCDへ公開します。期限超過時は直前の安全フレームを保持します。
-モデル変更の意図とランタイム互換性は
-[ADR-0007](docs/adr/0007-use-yunet-for-face-privacy.md)に記録しています。
+
+## 実行時データフロー
+
+1. DCMIPP Pipe 1がLCD用RGB565を非公開の作業バッファへsnapshot取得し、
+   Pipe 2が同じ中央正方形のRGB888をYuNet入力へ取得します。
+2. VisionタスクがNeural-ARTで推論し、YuNetの12出力をデコードして
+   confidence 0.20以上の候補にNMS 0.5を適用します。
+3. 最大10顔の固定長トラッカーが検出を対応付け、平滑化・保持・拡張した
+   保護ROIをRenderタスクへ発行します。
+4. Renderタスクが非公開バッファ上のROIにMASKまたはMOSAICを適用します。
+5. 両Pipeの取得完了から安全化完了までが33,000 us以内の場合だけ、
+   LTDCのVBlankで背景アドレスを切り替えてLCDへ公開します。
+
+RAWバッファはLTDCに設定しません。期限超過フレームは破棄し、LCDには
+直前の安全化済みフレームを保持します。起動直後、最初の安全化完了前、
+モデル検査失敗時は黒背景を維持します。
+
+## タスクと同期
+
+- **Vision**: カメラsnapshot待ち、入力診断、NPU推論、後処理、ROI追跡、
+  処理結果の発行を担当します。
+- **Render**: 最新の結果を受け取り、RGB565へのMASK/MOSAIC、キャッシュ同期、
+  33,000 us判定、VBlank公開または破棄を担当します。
+- **Control/Monitor**: B2のデバウンスとMASK/MOSAIC切替え、
+  1秒周期の`FD:`/`FD-DIAG:`統計出力を担当します。
+
+LCD背景は2面のダブルバッファで、各フレームの状態は
+`WORKING -> PROCESSED -> PUBLISHED`または`WORKING -> PROCESSED -> DROPPED`と
+遷移します。VisionはRenderが公開または破棄を確定するまで作業バッファを
+再利用しません。カメラ完了とVision/Render間の通知にイベントフラグ、
+結果とLCD操作の保護に優先度継承mutexを使います。
 
 ## ビルドと実行
 
@@ -53,16 +84,19 @@ STM32_Programmer_CLI -c port=SWD mode=HOTPLUG -el "$STM32N6_LOADER" -hardRst \
    1000 kHzに固定しています。T-Monitorコンソールは115200 bps、8-N-1です。
 5. B2を押すとMASKとMOSAICが切り替わります。
 
-## 画角と顔検出の診断
+## 安全機構と顔検出の診断
 
 表示用RGB565 PipeとYuNet入力Pipeは、横長のカメラ画像から同じ中央正方形を
 切り出します。左右の画角は失われますが、LCD上の顔とYuNetのROI座標系が一致し、
 顔の縦横比も維持されます。以前の`ASPECT_RATIO_FIT`は横長画像全体を正方形へ
 縮小していたため、表示の縦伸びと顔検出精度低下の原因候補でした。
 
-起動時にはYuNetの入力と12出力について、形式、サイズ、形状、量子化情報を
-検証します。不一致の場合は`ERROR: incompatible YuNet model`を表示し、RAW映像を
-公開せず黒背景を維持します。
+起動時にはXSPI2上のモデル重みを複数の既知オフセットで署名検査します。
+不一致の場合は`ERROR: program network_data.hex`を表示し、推論を開始しません。
+続けてYuNetの1入力と12出力について、形式、サイズ、形状、量子化情報を
+検証します。不一致の場合は`ERROR: incompatible YuNet model`を表示します。
+どちらの失敗時もRAW映像を公開せず黒背景を維持します。カメラ取得が3秒以内に
+完了しない場合も、最後の安全化済みフレームを保持してエラー表示します。
 
 T-Monitorへ1秒周期で出る`FD:`ログには次の診断値が含まれます。
 
@@ -194,43 +228,13 @@ python3 tools/generate_yunet_anchors.py
 onnxruntime等）に加え、実機（STM32N6570-DK、ST-Link接続）への書き込みまで
 一括で行う想定のもので、アンカーヘッダだけが目的なら不要です。
 
-## 次回作業への引き継ぎ（2026-09-25）
+## 検証状況
 
-現在の作業ブランチは`develop/add-yunet-failsafe-frame-gate`、作業開始時点の
-HEADは`0e5a4a6`です。このREADMEを含むYuNet正常化、診断、ROIトラッカーの変更は
-まだコミットされていません。次回は別ブランチへの切り替えや変更の破棄をせず、
-最初に`git status`と差分を確認してください。
-
-YuNetのchannel-last入力への修正後、実機で顔検出と約7.5～9.8 msの総処理時間、
-期限超過Dropなしを確認済みです。一方、その後に追加した時間安定化トラッカーは
-ホスト試験とCubeIDE Debugビルドまで完了していますが、実機受入試験は未実施です。
-モデルと重みはトラッカー追加時には変更していないため、現在のYuNet重みをすでに
-書き込んだボードでは`network_data.hex`の再書き込みは不要です。Appliを再ビルドし、
-新しいELFで起動してください。
-
-### 次に行うこと
-
-1. CubeIDEのDebug構成でAppliをクリーンビルドし、既存の
-   `mtk3bsp2_stm32n657_Appli Debug.launch`で実機を起動する。
-2. 正面、横向き、顔の移動、短時間の遮蔽、画面外への移動をMASKとMOSAICの両方で
-   試す。検出が一時的に切れたフレームで`faces=1 detected=0 held=1`となり、ROIが
-   消えずに拡大することを確認する。
-3. 顔を完全に外し、最後の検出から1,000 msまではROIが保持され、1,000 msを
-   超えたフレームで`expired=1`、`faces=0`になることを確認する。
-4. 1,000フレーム以上の`FD:`ログを保存し、`total`、`detected`、`held`、`expired`、
-   `published`、`dropped`、`consecutive`を評価する。目標は`total <= 33000 us`、
-   Faultと停止なし、未加工フレームの公開なしである。
-5. 実機結果に問題がなければ、READMEとADRを含む現在の変更をまとめてコミットする。
-
-実機調整はログを取得してから行います。新しい顔を拾わない場合は取得閾値0.35、
-追跡が外れる場合はIoU 0.15、ROIの遅れが大きい場合は旧40%／新60%の平滑化を
-評価します。複数の値を同時に変更せず、変更前後で同じ条件のログを比較します。
-
-次の安全性マイルストーンとしては、1秒を超える連続検出漏れでも顔を露出させない
-全画面MASK/MOSAICフォールバックを検討します。現状は計画どおりこの機能を入れて
-おらず、1,000 msを超えて顔検出が失敗するとROIが解除されます。
-
-## 確認済み範囲
+基準コミットは`e9b716a`（`fix: stabilize YuNet face privacy detection`）です。
+YuNetのchannel-last入力への修正後、実機で顔検出、約7.5～9.8 msの総処理時間、
+期限超過Dropなしを確認済みです。その後に追加したROIトラッカーは、
+ホスト試験とCubeIDE Debug相当のGNU Tools for STM32 14.3.rel1による
+クリーンビルドまで確認済みです。
 
 ホスト上のプライバシーフィルタ境界とYuNetスコア集計テストは次で実行できます。
 
@@ -242,27 +246,38 @@ cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
 ASAN_OPTIONS=detect_leaks=0 /tmp/privacy_filter_test
 ```
 
-このセッションでは以下を実装済みです:
-- `fd_pp_yunet.c` / `app_postprocess_fd_yunet_ui.c`
-  （`STM32N6-GettingStarted-FaceDetection` から移植した後処理実装）
-- `face_detection_app.c` / `privacy_filter.c` / `privacy_filter.h` の
-  `fd_pp_out_t`（顔検出・キーポイント対応）ベースへの置き換え
-- `app_config.h` の `POSTPROCESS_FD_YUNET_UI` への切り替え
-- `Appli/FaceDetection/Model/` 配下の実際のNeural-ART生成物
-  （`stedgeai generate`をローカル実行して生成。`network.c`、`network_data.hex`等）
-  と、`NetworkWeightsValid()`の署名テーブル更新
-- `Vendor/Postprocess/Inc/fd_yunet_anchors_{32,16,8}.h`（アンカーテーブル）の生成
-  （`tools/generate_yunet_anchors.py`。`fd_pp_yunet.c`と
-  `app_postprocess_fd_yunet_ui.c`がこのヘッダを含めて実際にコンパイルできることを
-  `arm-none-eabi-gcc -fsyntax-only`で確認済み）
-- 固定長マルチフェイストラッカー（新規0.35、更新0.20、IoU 0.15、最大10顔）、
-  ROI平滑化・拡張、1,000 ms保持、および`detected/held/expired`診断
+モデル入出力と量子化メタデータは次で検査できます。
 
-クリーンビルドはCubeIDE Debug相当のGNU Tools for STM32 14.3.rel1で確認済みです。
+```bash
+python3 Appli/FaceDetection/Model/verify_yunet_model_layout.py
+```
 
-未着手・未確認の項目:
+### 未検証・既知の制約
 
 - ROIトラッカー追加後の実機でのMASK/MOSAIC追従、1,000 ms保持・失効
 - トラッカー追加後の1,000フレーム連続動作、Fault/連続停止/RAW非公開の確認
 - 公式単体アプリでの正面顔とconfidence表示の実機確認
-- 1秒を超える検出漏れに対する全画面保護フォールバック
+- 1秒を超える連続検出漏れに対する全画面保護フォールバック
+
+現在は最後の検出から1,000 msを超えるとROIを解除し、全画面MASK/MOSAICへは
+移行しません。そのため、顔検出が1秒を超えて失敗した場合は顔が露出し得ます。
+この実装は「安全化完了前のRAWフレームを公開しない」ことは保証しますが、
+連続する顔検出漏れまで含む完全なプライバシー保証ではありません。
+
+## 次の作業
+
+1. CubeIDEのDebug構成でAppliをクリーンビルドし、
+   `Appli/mtk3bsp2_stm32n657_Appli Debug.launch`で実機を起動します。
+   トラッカー追加時にモデル重みは変更していないため、現在のYuNet重みが
+   書き込み済みなら`network_data.hex`の再書き込みは不要です。
+2. 正面、横向き、顔の移動、短時間の遮蔽、画面外への移動をMASKとMOSAICの
+   両方で試します。検出が一時的に切れたフレームで
+   `faces=1 detected=0 held=1`となり、ROIが消えずに拡大することを確認します。
+3. 顔を完全に画面外へ移動し、最後の検出から1,000 msまでROIが保持され、
+   1,000 msを超えたフレームで`expired=1 faces=0`となることを確認します。
+4. 1,000フレーム以上の`FD:`ログを保存し、`total`、`detected`、`held`、
+   `expired`、`published`、`dropped`、`consecutive`を評価します。受入条件は
+   `total <= 33000 us`、Faultと停止なし、未加工フレームの公開なしです。
+5. 基準ログを取得した後、必要な場合だけパラメータを1つずつ調整します。
+   新規顔を拾わない場合は取得閾値0.35、追跡が外れる場合はIoU 0.15、
+   ROIの遅れが大きい場合は旧40%/新60%の平滑化を評価し、同じ条件で比較します。
