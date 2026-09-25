@@ -39,7 +39,7 @@ STM32CubeIDEで`mtk3bsp2_stm32n657_Appli`プロジェクトの`Debug`構成を
 ビルドします。この構成では次のファイルと設定を使用します。
 
 - リンカスクリプト: `STM32N657X0HXQ_LRUN_FACE_DETECTION.ld`
-- NPUランタイムライブラリ: `FaceDetection/Vendor/Lib/NetworkRuntime1200_CM55_GCC.a`
+- NPUランタイムライブラリ: `FaceDetection/Vendor/Lib/NetworkRuntime1201_CM55_GCC.a`
 - `FaceDetection`以下のソースファイルとインクルードパス
 
 リンカスクリプトは、アプリケーションをSecure AXISRAM1、800 x 480の

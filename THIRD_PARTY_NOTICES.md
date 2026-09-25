@@ -36,6 +36,8 @@
   から取得（内容が完全一致することを確認済み）
 - 使用範囲: YuNetモデルと重み、Neural-ART生成コード、顔検出後処理
 - ライセンス: 各ソースファイルおよび上記リポジトリのライセンスを参照
+- Neural-ART生成物と互換のあるST Edge AI 4.0.1付属のLL_ATON
+  1.1.3 dev275と`NetworkRuntime1201_CM55_GCC.a`も同梱する
 - `Vendor/Postprocess/Inc/fd_yunet_anchors_{32,16,8}.h`（グリッドアンカー座標
   テーブル）は、通常はModel Zoo Servicesのデプロイパイプラインが生成する
   ファイルだが、このリポジトリでは

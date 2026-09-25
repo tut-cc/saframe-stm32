@@ -17,14 +17,24 @@ STM32N6570-DK上のμT-Kernel 3.0 BSP2で、カメラ画像をNeural-ARTへ入�
 
 `develop/add-modelzoo-object-detection` ブランチのST-YOLOX物体検出構成から、
 モデル生成物と後処理をYuNet顔検出構成へ置き換えています。既存のカメラ、LCD、
-Neural-ARTランタイム、dev-boot構成は維持しています。詳しいモデル調査の経緯は
+dev-boot構成は維持しています。Neural-ARTランタイムは生成物と合わせて
+ST Edge AI 4.0.1付属のLL_ATON 1.1.3 dev275 / NetworkRuntime1201へ更新しています。
+詳しいモデル調査の経緯は
 [MODEL_PROVENANCE.md](MODEL_PROVENANCE.md) を参照してください。
+
+ADR-0006の安全化済みフレーム公開ゲートも維持しています。カメラ画像は
+非公開バッファへ取得し、YuNet検出後のMASK/MOSAICが33,000 us以内に完了した
+フレームだけをLCDへ公開します。期限超過時は直前の安全フレームを保持します。
+モデル変更の意図とランタイム互換性は
+[ADR-0007](docs/adr/0007-use-yunet-for-face-privacy.md)に記録しています。
 
 ## ビルドと実行
 
 1. STM32CubeIDEへルート、Appli、FSBLの3プロジェクトをimportします。
 2. AppliとFSBLをDebug構成でビルドします。
-3. Development modeで、モデル重みを外部NORへ一度書き込みます。
+3. Development modeで、YuNetのモデル重みを外部NORへ書き込みます。
+   旧ST-YOLOX/BlazeFaceの重みは使えないため、このブランチへ切り替えたときは
+   必ず再書き込みしてください。
 
 ```bash
 export STM32N6_LOADER="<STM32CubeProgrammer>/bin/ExternalLoader/MX66UW1G45G_STM32N6570-DK.stldr"
@@ -117,7 +127,9 @@ ASAN_OPTIONS=detect_leaks=0 /tmp/privacy_filter_test
   `app_postprocess_fd_yunet_ui.c`がこのヘッダを含めて実際にコンパイルできることを
   `arm-none-eabi-gcc -fsyntax-only`で確認済み）
 
+クリーンビルドはCubeIDE Debug相当のGNU Tools for STM32 14.3.rel1で確認済みです。
+
 未着手・未確認の項目:
-- 実機ビルド（STM32CubeIDEでのフルビルド）・実機での連続動作、フレームレート、
+- 実機での連続動作、フレームレート、
   320 x 320モデルの推論時間（このサンドボックス環境には物理ボードが無いため
   未実施）
