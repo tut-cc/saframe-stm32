@@ -103,7 +103,10 @@ int32_t app_postprocess_run(void *pInput[], int nb_input, void *pOutput, void *p
 {
 	assert(nb_input == PP_OUTPUT_NB);
 	int32_t error = AI_FD_PP_ERROR_NO;
-	((fd_yunet_pp_static_param_t *) pInput_param)->nb_detect = 0;
+	fd_yunet_pp_static_param_t *params =
+			(fd_yunet_pp_static_param_t *) pInput_param;
+	params->nb_detect = 0;
+	YuNetScoreDiagnostics_Reset(&params->score_diagnostics);
 	fd_pp_out_t *pFdOutput = (fd_pp_out_t *) pOutput;
 	pFdOutput->pOutBuff = out_detections;
 
@@ -122,8 +125,7 @@ int32_t app_postprocess_run(void *pInput[], int nb_input, void *pOutput, void *p
 			.pKpsRaw_8    = (int8_t *) pInput[output_order_index[11]],
 	};
 
-	error = fd_yunet_pp_process_int8(&pp_input, pFdOutput,
-																	 (fd_yunet_pp_static_param_t *) pInput_param);
+	error = fd_yunet_pp_process_int8(&pp_input, pFdOutput, params);
 	return error;
 }
 

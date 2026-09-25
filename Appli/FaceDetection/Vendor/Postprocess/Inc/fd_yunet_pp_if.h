@@ -15,6 +15,7 @@
 #endif
 
 #include "fd_pp_output_if.h"
+#include "yunet_diagnostics.h"
 
 /* I/O structures for Yunet post-processing model */
 /* ------------------------------------ */
@@ -76,6 +77,7 @@ typedef struct
   int8_t obj_8_zero_point;
   int8_t bbx_8_zero_point;
   int8_t kps_8_zero_point;
+  YuNetScoreDiagnostics score_diagnostics;
 } fd_yunet_pp_static_param_t;
 
 

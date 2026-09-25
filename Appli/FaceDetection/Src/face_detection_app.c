@@ -37,6 +37,7 @@
 #include "app_config.h"
 #include "crop_img.h"
 #include "privacy_filter.h"
+#include "privacy_tracker.h"
 #include "face_detection_diagnostics.h"
 
 #undef assert
@@ -53,7 +54,6 @@
 #define PRIVACY_RESULT_READY     (1U << 0)
 #define PRIVACY_BUFFER_RELEASED  (1U << 1)
 #define PRIVACY_FRAME_DEADLINE_US (33000U)
-#define PRIVACY_ROI_MARGIN_PC    (15U)
 #define CONTROL_PERIOD_MS        (20U)
 #define BUTTON_DEBOUNCE_MS       (200U)
 
@@ -76,6 +76,18 @@ typedef struct
   uint32_t XSize;
   uint32_t YSize;
 } Rectangle_TypeDef;
+
+typedef struct
+{
+  uint8_t input_min[3];
+  uint8_t input_max[3];
+  uint8_t input_mean[3];
+  uint32_t input_hash;
+  int8_t cls_output_min;
+  int8_t cls_output_max;
+  int8_t obj_output_min;
+  int8_t obj_output_max;
+} YuNetRuntimeDiagnostics;
 
 /* Lcd Background area */
 Rectangle_TypeDef lcd_bg_area = {
@@ -149,6 +161,7 @@ static PrivacyFrameResult privacy_results[2];
 static uint32_t privacy_published_index;
 static PrivacyFrameResult privacy_completed_result;
 static bool privacy_completed_result_valid;
+static PrivacyTracker privacy_tracker;
 static volatile PrivacyMode privacy_mode = PRIVACY_MODE_MASK;
 static volatile uint32_t privacy_published_frames;
 static volatile uint32_t privacy_dropped_deadline;
@@ -171,14 +184,27 @@ static void PerformanceCounter_Init(void);
 static uint32_t PerformanceCounter_Now(void);
 static uint32_t PerformanceCounter_ToUs(uint32_t cycles);
 static uint32_t PerformanceCounter_DeadlineCycles(void);
-static void PublishPrivacyResult(fd_pp_out_t *postprocess,
+static void CollectYuNetInputDiagnostics(const uint8_t *input,
+                                         uint32_t input_length,
+                                         YuNetRuntimeDiagnostics *diagnostics);
+static void CollectYuNetOutputDiagnostics(stai_ptr *outputs,
+                                          const int32_t output_lengths[],
+                                          YuNetRuntimeDiagnostics *diagnostics);
+static void TrackPrivacyFaces(const fd_pp_out_t *postprocess,
+                              uint32_t now_ms,
+                              PrivacyTrackerResult *tracked);
+static void PublishPrivacyResult(const PrivacyTrackerResult *tracked,
+                                 uint32_t nms_face_candidates,
                                  uint32_t frame_number,
                                  uint32_t buffer_index,
                                  uint32_t deadline_started_cycles,
                                  uint32_t capture_us,
                                  uint32_t inference_us,
                                  uint32_t postprocess_us,
-                                 uint32_t vision_us);
+                                 uint32_t vision_us,
+                                 float max_face_score,
+                                 uint32_t face_candidates,
+                                 const YuNetRuntimeDiagnostics *diagnostics);
 static void PrivacyRenderTask(INT stacd, void *exinf);
 static void ControlMonitorTask(INT stacd, void *exinf);
 
@@ -188,6 +214,7 @@ static void CSI_InterruptHandler(UINT intno);
 static void DCMIPP_InterruptHandler(UINT intno);
 static void RegisterApplicationInterrupts(void);
 static bool NetworkWeightsValid(void);
+static bool YuNetModelInfoValid(const stai_network_info *info);
 
 extern void NPU0_IRQHandler(void);
 
@@ -251,7 +278,11 @@ void FaceDetection_Run(void)
 
   ret = stai_network_get_info(network_context, &info);
   assert(ret == STAI_SUCCESS);
-  app_postprocess_init(&pp_params, &info);
+  const bool model_info_valid = YuNetModelInfoValid(&info);
+  if (model_info_valid)
+  {
+    assert(app_postprocess_init(&pp_params, &info) == 0);
+  }
 
   /*** Camera Init ************************************************************/
   uint32_t pitch_nn = 0;
@@ -272,6 +303,17 @@ void FaceDetection_Run(void)
     }
   }
 
+  if (!model_info_valid)
+  {
+    Display_Status("ERROR: incompatible YuNet model", UTIL_LCD_COLOR_RED);
+    tm_putstring((UB *)"FD: inference disabled; YuNet tensor metadata mismatch.\n");
+    while (1)
+    {
+      CameraPipeline_IspUpdate();
+      (void)tk_dly_tsk(100);
+    }
+  }
+
   Display_Status("FD: waiting for camera frame", UTIL_LCD_COLOR_YELLOW);
   tm_putstring((UB *)"FD: priming camera into a private buffer.\n");
   if (!PrimeCamera())
@@ -284,6 +326,7 @@ void FaceDetection_Run(void)
     }
   }
   tm_putstring((UB *)"FD: camera primed; waiting for snapshot pipes.\n");
+  PrivacyTracker_Init(&privacy_tracker);
   StartPrivacyTasks();
 
   /*** App Loop ***************************************************************/
@@ -341,8 +384,14 @@ void FaceDetection_Run(void)
     SCB_CleanInvalidateDCache_by_Addr(nn_in, nn_in_len);
 #endif
 
+    /* Pipe 2 is a DMA writer. Invalidate before CPU diagnostics so neither
+     * the diagnostics nor a later cache eviction can use stale input lines. */
+    SCB_InvalidateDCache_by_Addr(nn_in, nn_in_len);
+    YuNetRuntimeDiagnostics runtime_diagnostics;
+    CollectYuNetInputDiagnostics(nn_in, nn_in_len, &runtime_diagnostics);
+
     const uint32_t vision_started_cycles = capture_completed_cycles;
-    ts[0] = vision_started_cycles;
+    ts[0] = PerformanceCounter_Now();
     if (frame_count == 0U)
     {
       Display_Status("FD: first inference running", UTIL_LCD_COLOR_GREEN);
@@ -355,24 +404,32 @@ void FaceDetection_Run(void)
     assert(ret == 0);
     ts[1] = PerformanceCounter_Now();
 
+    /* Neural-ART writes these buffers without CPU cache coherency. Discard
+     * cached lines before post-processing reads the new inference result. */
+    for (int i = 0; i < number_output; i++)
+    {
+      SCB_InvalidateDCache_by_Addr(nn_out[i], nn_out_len[i]);
+    }
+
     g_app_diagnostic_stage = APP_STAGE_POSTPROCESS;
     int32_t pp_ret = app_postprocess_run((void **) nn_out, number_output, &pp_output, &pp_params);
     assert(pp_ret == 0);
+    CollectYuNetOutputDiagnostics(nn_out, nn_out_len, &runtime_diagnostics);
+    PrivacyTrackerResult tracked;
+    TrackPrivacyFaces(&pp_output, HAL_GetTick(), &tracked);
     ts[2] = PerformanceCounter_Now();
     privacy_frame_state[working_index] = PRIVACY_FRAME_PROCESSED;
 
     frame_count++;
-    PublishPrivacyResult(&pp_output, frame_count, working_index,
+    PublishPrivacyResult(&tracked, (uint32_t)pp_output.nb_detect,
+                         frame_count, working_index,
                          capture_completed_cycles, capture_us,
                          PerformanceCounter_ToUs(ts[1] - ts[0]),
                          PerformanceCounter_ToUs(ts[2] - ts[1]),
-                         PerformanceCounter_ToUs(ts[2] - vision_started_cycles));
-    /* Discard nn_out region (used by pp_input and pp_outputs variables) to avoid Dcache evictions during nn inference */
-    for (int i = 0; i < number_output; i++)
-    {
-      void *tmp = nn_out[i];
-      SCB_InvalidateDCache_by_Addr(tmp, nn_out_len[i]);
-    }
+                         PerformanceCounter_ToUs(ts[2] - vision_started_cycles),
+                         pp_params.score_diagnostics.max_score,
+                         pp_params.score_diagnostics.candidates_above_threshold,
+                         &runtime_diagnostics);
 
     UINT release_pattern;
     assert(tk_wai_flg(privacy_result_flag_id, PRIVACY_BUFFER_RELEASED,
@@ -489,10 +546,11 @@ static void RegisterApplicationInterrupts(void)
 
 static bool NetworkWeightsValid(void)
 {
-  /* Signature of the YuNet (yunetn_320_qdq_int8.onnx) network_data.hex,
-   * generated via Model/generate-n6-model_STM32N6570-DK.sh. The weights blob
-   * is only ~94 KB (vs. ~1.2 MB for ST-YOLOX), so the offsets are closer
-   * together and stay within its smaller address span. */
+  /* Signature of the official Model Zoo YuNet
+   * (ONNX SHA-256 d03a5daad28e796dada4b3d81b5b95cdf6c02e5ab22478ae2e92aee2ed7456e2),
+   * generated channel-last via Model/generate-n6-model_STM32N6570-DK.sh.
+   * Changing the input layout does not change the 94,521-byte weight blob,
+   * but the tail word is checked as well so a truncated write is rejected. */
   static const struct
   {
     uint32_t offset;
@@ -501,6 +559,7 @@ static bool NetworkWeightsValid(void)
     { 0x00000U, 0xFC31952DU },
     { 0x08000U, 0x2117D020U },
     { 0x16000U, 0x0502F34BU },
+    { 0x17000U, 0x28F80634U },
   };
 
   for (uint32_t i = 0; i < (sizeof(signature) / sizeof(signature[0])); i++)
@@ -513,6 +572,86 @@ static bool NetworkWeightsValid(void)
     }
   }
 
+  return true;
+}
+
+static bool YuNetModelInfoValid(const stai_network_info *info)
+{
+  static const uint32_t expected_output_size[STAI_NETWORK_OUT_NUM] = {
+    1600U, 400U, 100U, 1600U, 400U, 100U,
+    6400U, 1600U, 400U, 16000U, 4000U, 1000U,
+  };
+  static const int32_t expected_output_shape[STAI_NETWORK_OUT_NUM][3] = {
+    {1600, 1, 1}, {400, 1, 1}, {100, 1, 1},
+    {1600, 1, 1}, {400, 1, 1}, {100, 1, 1},
+    {1600, 4, 1}, {400, 4, 1}, {100, 4, 1},
+    {1600, 10, 1}, {400, 10, 1}, {100, 10, 1},
+  };
+  static const int32_t expected_input_shape[4] = {1, 320, 320, 3};
+
+  if ((info == NULL) || (info->n_inputs != 1U) ||
+      (info->n_outputs != STAI_NETWORK_OUT_NUM) ||
+      (info->inputs == NULL) || (info->outputs == NULL))
+  {
+    tm_printf((UB *)"FD: ERROR: YuNet expects 1 input and %u outputs (got %u/%u).\n",
+              STAI_NETWORK_OUT_NUM,
+              info == NULL ? 0U : info->n_inputs,
+              info == NULL ? 0U : info->n_outputs);
+    return false;
+  }
+
+  const stai_tensor *input = &info->inputs[0];
+  if ((input->format != STAI_FORMAT_U8) ||
+      (input->size_bytes != STAI_NETWORK_IN_1_SIZE_BYTES) ||
+      (input->shape.size != 4U) || (input->shape.data == NULL))
+  {
+    tm_putstring((UB *)"FD: ERROR: YuNet input format/size/rank mismatch.\n");
+    return false;
+  }
+  for (uint32_t axis = 0U; axis < 4U; axis++)
+  {
+    if (input->shape.data[axis] != expected_input_shape[axis])
+    {
+      tm_printf((UB *)"FD: ERROR: YuNet input shape axis %u is %d, expected %d.\n",
+                axis, input->shape.data[axis], expected_input_shape[axis]);
+      return false;
+    }
+  }
+
+  for (uint32_t output_index = 0U;
+       output_index < STAI_NETWORK_OUT_NUM; output_index++)
+  {
+    const stai_tensor *output = &info->outputs[output_index];
+    if ((output->format != STAI_FORMAT_S8) ||
+        (output->size_bytes != expected_output_size[output_index]) ||
+        (output->shape.size != 3U) || (output->shape.data == NULL))
+    {
+      tm_printf((UB *)"FD: ERROR: YuNet output %u format/size/rank mismatch.\n",
+                output_index + 1U);
+      return false;
+    }
+    for (uint32_t axis = 0U; axis < 3U; axis++)
+    {
+      if (output->shape.data[axis] != expected_output_shape[output_index][axis])
+      {
+        tm_printf((UB *)"FD: ERROR: YuNet output %u shape axis %u mismatch.\n",
+                  output_index + 1U, axis);
+        return false;
+      }
+    }
+    if ((output->scale.size != 1U) || (output->scale.data == NULL) ||
+        !(output->scale.data[0] > 0.0f) ||
+        (output->zeropoint.size != 1U) || (output->zeropoint.data == NULL) ||
+        (output->zeropoint.data[0] < INT8_MIN) ||
+        (output->zeropoint.data[0] > INT8_MAX))
+    {
+      tm_printf((UB *)"FD: ERROR: YuNet output %u quantization mismatch.\n",
+                output_index + 1U);
+      return false;
+    }
+  }
+
+  tm_putstring((UB *)"FD: YuNet tensor metadata: OK (320x320 RGB, 12 INT8 outputs).\n");
   return true;
 }
 
@@ -637,23 +776,6 @@ void IAC_IRQHandler(void)
 }
 
 /* Display functions */
-static int clamp_point(int *x, int *y)
-{
-  int xi = *x;
-  int yi = *y;
-
-  if (*x < 0)
-    *x = 0;
-  if (*y < 0)
-    *y = 0;
-  if (*x >= (int)lcd_bg_area.XSize)
-    *x = lcd_bg_area.XSize - 1;
-  if (*y >= (int)lcd_bg_area.YSize)
-    *y = lcd_bg_area.YSize - 1;
-
-  return (xi != *x) || (yi != *y);
-}
-
 static void convert_length(float32_t wi, float32_t hi, int *wo, int *ho)
 {
   *wo = lcd_bg_area.XSize * wi;
@@ -666,7 +788,7 @@ static void convert_point(float32_t xi, float32_t yi, int *xo, int *yo)
   *yo = lcd_bg_area.YSize * yi;
 }
 
-static PrivacyRoi MakePrivacyRoi(const fd_pp_outBuffer_t *detection)
+static PrivacyDetection MakePrivacyDetection(const fd_pp_outBuffer_t *detection)
 {
   int center_x, center_y;
   int width, height;
@@ -674,35 +796,70 @@ static PrivacyRoi MakePrivacyRoi(const fd_pp_outBuffer_t *detection)
   convert_point(detection->x_center, detection->y_center, &center_x, &center_y);
   convert_length(detection->width, detection->height, &width, &height);
 
-  const int margin_x = (width * PRIVACY_ROI_MARGIN_PC) / 100;
-  const int margin_y = (height * PRIVACY_ROI_MARGIN_PC) / 100;
-  int x0 = center_x - ((width + 1) / 2) - margin_x;
-  int y0 = center_y - ((height + 1) / 2) - margin_y;
-  int x1 = center_x + ((width + 1) / 2) + margin_x;
-  int y1 = center_y + ((height + 1) / 2) + margin_y;
+  int x0 = center_x - ((width + 1) / 2);
+  int y0 = center_y - ((height + 1) / 2);
+  int x1 = center_x + ((width + 1) / 2);
+  int y1 = center_y + ((height + 1) / 2);
+  if (x0 < 0)
+  {
+    x0 = 0;
+  }
+  if (y0 < 0)
+  {
+    y0 = 0;
+  }
+  if (x1 > (int)lcd_bg_area.XSize)
+  {
+    x1 = (int)lcd_bg_area.XSize;
+  }
+  if (y1 > (int)lcd_bg_area.YSize)
+  {
+    y1 = (int)lcd_bg_area.YSize;
+  }
 
-  clamp_point(&x0, &y0);
-  clamp_point(&x1, &y1);
-
-  PrivacyRoi roi = {0};
+  PrivacyDetection privacy_detection = {
+    .confidence = detection->conf,
+  };
   if ((x1 > x0) && (y1 > y0))
   {
-    roi.x = (int16_t)x0;
-    roi.y = (int16_t)y0;
-    roi.width = (uint16_t)(x1 - x0 + 1);
-    roi.height = (uint16_t)(y1 - y0 + 1);
+    privacy_detection.roi.x = (int16_t)x0;
+    privacy_detection.roi.y = (int16_t)y0;
+    privacy_detection.roi.width = (uint16_t)(x1 - x0);
+    privacy_detection.roi.height = (uint16_t)(y1 - y0);
   }
-  return roi;
+  return privacy_detection;
 }
 
-static void PublishPrivacyResult(fd_pp_out_t *postprocess,
+static void TrackPrivacyFaces(const fd_pp_out_t *postprocess,
+                              uint32_t now_ms,
+                              PrivacyTrackerResult *tracked)
+{
+  PrivacyDetection detections[PRIVACY_MAX_FACES] = {0};
+  uint32_t detection_count = (uint32_t)postprocess->nb_detect;
+  if (detection_count > PRIVACY_MAX_FACES)
+  {
+    detection_count = PRIVACY_MAX_FACES;
+  }
+  for (uint32_t i = 0U; i < detection_count; i++)
+  {
+    detections[i] = MakePrivacyDetection(&postprocess->pOutBuff[i]);
+  }
+  PrivacyTracker_Update(&privacy_tracker, detections, detection_count, now_ms,
+                        lcd_bg_area.XSize, lcd_bg_area.YSize, tracked);
+}
+
+static void PublishPrivacyResult(const PrivacyTrackerResult *tracked,
+                                 uint32_t nms_face_candidates,
                                  uint32_t frame_number,
                                  uint32_t buffer_index,
                                  uint32_t deadline_started_cycles,
                                  uint32_t capture_us,
                                  uint32_t inference_us,
                                  uint32_t postprocess_us,
-                                 uint32_t vision_us)
+                                 uint32_t vision_us,
+                                 float max_face_score,
+                                 uint32_t face_candidates,
+                                 const YuNetRuntimeDiagnostics *diagnostics)
 {
   PrivacyFrameResult result = {
     .frame_number = frame_number,
@@ -713,16 +870,30 @@ static void PublishPrivacyResult(fd_pp_out_t *postprocess,
     .inference_us = inference_us,
     .postprocess_us = postprocess_us,
     .vision_us = vision_us,
+    .max_face_score = max_face_score,
+    .face_candidates = face_candidates,
+    .nms_face_candidates = nms_face_candidates,
+    .detected_faces = tracked->detected_count,
+    .held_faces = tracked->held_count,
+    .expired_tracks = tracked->expired_count,
+    .input_hash = diagnostics->input_hash,
+    .cls_output_min = diagnostics->cls_output_min,
+    .cls_output_max = diagnostics->cls_output_max,
+    .obj_output_min = diagnostics->obj_output_min,
+    .obj_output_max = diagnostics->obj_output_max,
   };
 
-  result.face_count = (uint32_t)postprocess->nb_detect;
-  if (result.face_count > PRIVACY_MAX_FACES)
+  for (uint32_t channel = 0U; channel < 3U; channel++)
   {
-    result.face_count = PRIVACY_MAX_FACES;
+    result.input_min[channel] = diagnostics->input_min[channel];
+    result.input_max[channel] = diagnostics->input_max[channel];
+    result.input_mean[channel] = diagnostics->input_mean[channel];
   }
+
+  result.face_count = tracked->roi_count;
   for (uint32_t i = 0; i < result.face_count; i++)
   {
-    result.faces[i] = MakePrivacyRoi(&postprocess->pOutBuff[i]);
+    result.faces[i] = tracked->rois[i];
   }
 
   assert(tk_loc_mtx(privacy_result_mutex_id, TMO_FEVR) == E_OK);
@@ -937,16 +1108,42 @@ static void ControlMonitorTask(INT stacd, void *exinf)
       assert(tk_unl_mtx(privacy_result_mutex_id) == E_OK);
       if (result_valid)
       {
-        tm_printf((UB *)"FD: frame=%u mode=%s faces=%u capture=%uus ai=%uus pp=%uus "
+        float max_score = result.max_face_score;
+        if (!(max_score > 0.0f))
+        {
+          max_score = 0.0f;
+        }
+        if (max_score > 9.999f)
+        {
+          max_score = 9.999f;
+        }
+        const uint32_t score_milli = (uint32_t)(max_score * 1000.0f + 0.5f);
+        tm_printf((UB *)"FD: frame=%u mode=%s faces=%u detected=%u held=%u expired=%u "
+                         "max_score=%u.%03u candidates=%u raw_candidates=%u "
+                         "capture=%uus ai=%uus pp=%uus "
                          "vision=%uus inv=%uus filter=%uus clean=%uus render=%uus total=%uus "
                          "ltdc=%uus vblank=%uus published=%u dropped=%u consecutive=%u.\n",
                   result.frame_number, PrivacyFilter_ModeName(result.applied_mode),
-                  result.face_count, result.capture_us, result.inference_us,
+                  result.face_count, result.detected_faces, result.held_faces,
+                  result.expired_tracks,
+                  score_milli / 1000U, score_milli % 1000U,
+                  result.nms_face_candidates, result.face_candidates,
+                  result.capture_us, result.inference_us,
                   result.postprocess_us, result.vision_us,
                   result.cache_invalidate_us, result.filter_us, result.cache_clean_us,
                   result.render_us, result.total_us, result.ltdc_us, result.vblank_us,
                   result.published_frames, result.dropped_deadline,
                   result.consecutive_drops);
+        tm_printf((UB *)"FD-DIAG: frame=%u input_rgb="
+                         "R[%u,%u,%u] G[%u,%u,%u] B[%u,%u,%u] hash=%08x "
+                         "cls_q=[%d,%d] obj_q=[%d,%d].\n",
+                  result.frame_number,
+                  result.input_min[0], result.input_max[0], result.input_mean[0],
+                  result.input_min[1], result.input_max[1], result.input_mean[1],
+                  result.input_min[2], result.input_max[2], result.input_mean[2],
+                  result.input_hash,
+                  result.cls_output_min, result.cls_output_max,
+                  result.obj_output_min, result.obj_output_max);
       }
       last_log_at = now;
     }
@@ -1038,6 +1235,83 @@ static uint32_t PerformanceCounter_DeadlineCycles(void)
   const uint32_t cycles_per_us = SystemCoreClock / 1000000U;
   assert(cycles_per_us != 0U);
   return cycles_per_us * PRIVACY_FRAME_DEADLINE_US;
+}
+
+static void CollectYuNetInputDiagnostics(const uint8_t *input,
+                                         uint32_t input_length,
+                                         YuNetRuntimeDiagnostics *diagnostics)
+{
+  const uint32_t channel_count = 3U;
+  const uint32_t pixel_stride = 64U;
+  const uint32_t pixel_count = input_length / channel_count;
+  uint32_t sums[3] = {0U, 0U, 0U};
+  uint32_t samples = 0U;
+  uint32_t hash = 2166136261U;
+
+  for (uint32_t channel = 0U; channel < channel_count; channel++)
+  {
+    diagnostics->input_min[channel] = UINT8_MAX;
+    diagnostics->input_max[channel] = 0U;
+  }
+
+  for (uint32_t pixel = 0U; pixel < pixel_count; pixel += pixel_stride)
+  {
+    const uint32_t offset = pixel * channel_count;
+    for (uint32_t channel = 0U; channel < channel_count; channel++)
+    {
+      const uint8_t value = input[offset + channel];
+      if (value < diagnostics->input_min[channel])
+      {
+        diagnostics->input_min[channel] = value;
+      }
+      if (value > diagnostics->input_max[channel])
+      {
+        diagnostics->input_max[channel] = value;
+      }
+      sums[channel] += value;
+      hash = (hash ^ value) * 16777619U;
+    }
+    samples++;
+  }
+
+  for (uint32_t channel = 0U; channel < channel_count; channel++)
+  {
+    diagnostics->input_mean[channel] =
+        samples == 0U ? 0U : (uint8_t)(sums[channel] / samples);
+  }
+  diagnostics->input_hash = hash;
+}
+
+static void CollectYuNetOutputDiagnostics(stai_ptr *outputs,
+                                          const int32_t output_lengths[],
+                                          YuNetRuntimeDiagnostics *diagnostics)
+{
+  diagnostics->cls_output_min = INT8_MAX;
+  diagnostics->cls_output_max = INT8_MIN;
+  diagnostics->obj_output_min = INT8_MAX;
+  diagnostics->obj_output_max = INT8_MIN;
+
+  /* Generated YuNet order is cls strides 8/16/32, then objectness 8/16/32. */
+  for (uint32_t output_index = 0U; output_index < 6U; output_index++)
+  {
+    const int8_t *values = (const int8_t *)outputs[output_index];
+    const int32_t length = output_lengths[output_index];
+    int8_t *minimum = output_index < 3U ?
+        &diagnostics->cls_output_min : &diagnostics->obj_output_min;
+    int8_t *maximum = output_index < 3U ?
+        &diagnostics->cls_output_max : &diagnostics->obj_output_max;
+    for (int32_t i = 0; i < length; i++)
+    {
+      if (values[i] < *minimum)
+      {
+        *minimum = values[i];
+      }
+      if (values[i] > *maximum)
+      {
+        *maximum = values[i];
+      }
+    }
+  }
 }
 
 static void WaitForLayerReload(uint32_t layer_index)

@@ -128,7 +128,7 @@
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="mtk3_bsp2"/>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Drivers"/>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="FaceDetection/Src"/>
-						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="FaceDetection/Model"/>
+						<entry excluding="st_ai_output|st_ai_ws" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="FaceDetection/Model"/>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="FaceDetection/Vendor/HAL/Src"/>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="FaceDetection/Vendor/BSP"/>
 						<entry excluding="ISP_Library/isp/Src/isp_conf_template.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="FaceDetection/Vendor/Camera"/>
@@ -265,7 +265,7 @@
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="mtk3_bsp2"/>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Drivers"/>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="FaceDetection/Src"/>
-						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="FaceDetection/Model"/>
+						<entry excluding="st_ai_output|st_ai_ws" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="FaceDetection/Model"/>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="FaceDetection/Vendor/HAL/Src"/>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="FaceDetection/Vendor/BSP"/>
 						<entry excluding="ISP_Library/isp/Src/isp_conf_template.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="FaceDetection/Vendor/Camera"/>

@@ -23,7 +23,8 @@ cd "$script_dir"
 
 stedgeai generate --model "$model_path" --target stm32n6 \
   --st-neural-art default@user_neuralart_STM32N6570-DK.json \
-  --input-data-type uint8 --output-data-type int8
+  --input-data-type uint8 --output-data-type int8 \
+  --inputs-ch-position chlast
 
 cp st_ai_output/network.c "$script_dir/"
 cp st_ai_output/network_ecblobs.h "$script_dir/"
@@ -32,6 +33,8 @@ cp st_ai_output/stai_network.h "$script_dir/"
 cp st_ai_output/network_atonbuf.xSPI2.raw "$script_dir/network_data.xSPI2.bin"
 arm-none-eabi-objcopy -I binary "$script_dir/network_data.xSPI2.bin" \
   --change-addresses 0x70380000 -O ihex "$script_dir/network_data.hex"
+
+python3 "$script_dir/verify_yunet_model_layout.py"
 
 echo "Generated Neural-ART artifacts in $script_dir"
 echo "Review: git diff -- Appli/FaceDetection/Model"

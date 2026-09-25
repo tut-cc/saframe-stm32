@@ -81,7 +81,7 @@ static void DCMIPP_PipeInitDisplay(CMW_CameraInit_t *camConf, uint32_t *bg_width
 static void DCMIPP_PipeInitNn(uint32_t *pitch)
 {
   CMW_Aspect_Ratio_Mode_t aspect_ratio;
-  CMW_DCMIPP_Conf_t dcmipp_conf;
+  CMW_DCMIPP_Conf_t dcmipp_conf = {0};
   int ret;
 
   if (ASPECT_RATIO_MODE == ASPECT_RATIO_CROP)

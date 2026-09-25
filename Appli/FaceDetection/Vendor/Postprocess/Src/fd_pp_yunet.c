@@ -166,7 +166,10 @@ static int32_t fd_pp_level_decode_and_store_is8(int8_t *pRawBoxes,
 
   for (int32_t det = 0; det < (int32_t)inDetection; ++det)
   {
-    float32_t  proba = (*pCls - cls_zp)*cls_scale * (*pObj - obj_zp)*obj_scale;
+    float32_t proba = YuNetScoreDiagnostics_Dequantize(
+        *pCls, cls_scale, cls_zp, *pObj, obj_scale, obj_zp);
+    YuNetScoreDiagnostics_Observe(&pInput_static_param->score_diagnostics,
+                                  proba, pInput_static_param->conf_threshold);
     if ( proba > pInput_static_param->conf_threshold) {
       if (det_count >= pInput_static_param->allocated_boxes) {
         return AI_FD_PP_ERROR_TRUNCATED;
@@ -231,7 +234,9 @@ static int32_t fd_pp_level_decode_and_store(float32_t *pRawBoxes,
 
   for (int32_t det = 0; det < (int32_t)inDetection; ++det)
   {
-    float32_t  proba = (*pCls) * (*pObj);
+    float32_t proba = (*pCls) * (*pObj);
+    YuNetScoreDiagnostics_Observe(&pInput_static_param->score_diagnostics,
+                                  proba, pInput_static_param->conf_threshold);
     if ( proba > pInput_static_param->conf_threshold) {
       if (det_count >= pInput_static_param->allocated_boxes) {
         return AI_FD_PP_ERROR_TRUNCATED;
@@ -414,6 +419,8 @@ int32_t fd_yunet_pp_reset(fd_yunet_pp_static_param_t *pInput_static_param)
   {
     return (AI_FD_PP_ERROR);
   }
+  pInput_static_param->nb_detect = 0;
+  YuNetScoreDiagnostics_Reset(&pInput_static_param->score_diagnostics);
   return (AI_FD_PP_ERROR_NO);
 }
 

@@ -29,10 +29,10 @@
 #define ASPECT_RATIO_CROP       (1) /* Crop both pipes to nn input aspect ratio; Original aspect ratio kept */
 #define ASPECT_RATIO_FIT        (2) /* Resize both pipe to NN input aspect ratio; Original aspect ratio not kept */
 #define ASPECT_RATIO_FULLSCREEN (3) /* Resize camera image to NN input size and display a maximized image. See Doc/Build-Options.md#aspect-ratio-mode */
-/* Matches face_detection/config_file_examples/deployment_n6_yunet_config.yaml's
- * preprocessing.resizing.aspect_ratio: fit; re-check against the imported
- * app_config.h once tools/import_modelzoo_face_detection.sh has run. */
-#define ASPECT_RATIO_MODE ASPECT_RATIO_FIT
+/* Preserve face geometry by taking the same centered square crop for the LCD
+ * and YuNet pipes. FIT is intentionally not used because it stretches the
+ * widescreen camera frame into a square and degrades face proportions. */
+#define ASPECT_RATIO_MODE ASPECT_RATIO_CROP
 
 /* Model Related Info */
 #define POSTPROCESS_TYPE    POSTPROCESS_FD_YUNET_UI
@@ -57,7 +57,10 @@
 #define AI_FD_YUNET_PP_OUT_16_NB_BOXES     (400)
 #define AI_FD_YUNET_PP_OUT_8_NB_BOXES      (1600)
 #define AI_FD_YUNET_PP_MAX_BOXES_LIMIT     (10)
-#define AI_FD_YUNET_PP_CONF_THRESHOLD      (0.5)
+/* Decode/NMS candidates down to the tracker update threshold. The tracker
+ * requires 0.35 for a new face and uses 0.20 only to maintain an existing
+ * spatially matching track. */
+#define AI_FD_YUNET_PP_CONF_THRESHOLD      (0.20)
 #define AI_FD_YUNET_PP_IOU_THRESHOLD       (0.5)
 
 /* Display */
