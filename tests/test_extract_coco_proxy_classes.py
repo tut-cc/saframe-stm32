@@ -14,12 +14,17 @@ SPEC.loader.exec_module(MODULE)
 class ExtractCocoProxyClassesTest(unittest.TestCase):
     def test_filters_images_and_remaps_categories_in_contract_order(self):
         source = {
-            "images": [{"id": 10}, {"id": 11}, {"id": 12}],
+            "images": [
+                {"id": 10, "width": 10, "height": 10},
+                {"id": 11, "width": 10, "height": 10},
+                {"id": 12, "width": 10, "height": 10},
+            ],
             "annotations": [
-                {"id": 1, "image_id": 10, "category_id": 84},
-                {"id": 2, "image_id": 10, "category_id": 1},
-                {"id": 3, "image_id": 11, "category_id": 13},
-                {"id": 4, "image_id": 12, "category_id": 3},
+                {"id": 1, "image_id": 10, "category_id": 84, "bbox": [1, 1, 2, 2]},
+                {"id": 2, "image_id": 10, "category_id": 1, "bbox": [1, 1, 2, 2]},
+                {"id": 3, "image_id": 11, "category_id": 13, "bbox": [-2, 8, 5, 5]},
+                {"id": 4, "image_id": 12, "category_id": 3, "bbox": [1, 1, 2, 2]},
+                {"id": 5, "image_id": 11, "category_id": 13, "bbox": [20, 20, 1, 1]},
             ],
             "categories": [],
         }
@@ -34,8 +39,11 @@ class ExtractCocoProxyClassesTest(unittest.TestCase):
             [(1, "person"), (2, "book"), (3, "stop sign")],
         )
         self.assertEqual([counts[index] for index in (1, 2, 3)], [1, 1, 1])
+        clipped = next(item for item in result["annotations"] if item["id"] == 3)
+        self.assertEqual(clipped["bbox"], [0.0, 8.0, 3.0, 2.0])
+        self.assertEqual(clipped["area"], 6.0)
 
-    def test_writes_zero_based_normalized_tfs_labels(self):
+    def test_writes_zero_based_normalized_darknet_labels(self):
         filtered = {
             "images": [{"id": 5, "file_name": "sample.jpg", "width": 100, "height": 50}],
             "annotations": [
@@ -45,10 +53,10 @@ class ExtractCocoProxyClassesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             images = root / "images"
-            output = root / "tfs"
+            output = root / "darknet"
             images.mkdir()
             (images / "sample.jpg").write_bytes(b"image")
-            MODULE.write_tfs_dataset(filtered, images, output)
+            MODULE.write_darknet_dataset(filtered, images, output)
             self.assertTrue((output / "sample.jpg").is_symlink())
             self.assertEqual(
                 (output / "sample.txt").read_text(encoding="ascii"),

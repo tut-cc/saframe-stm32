@@ -23,18 +23,28 @@ directories:
 python3 tools/extract_coco_proxy_classes.py \
   <coco>/annotations/instances_train2017.json \
   <coco>/annotations/instances_train2017_proxy3.json \
-  --images <coco>/train2017 --tfs-output <work>/proxy3/train
+  --images <coco>/train2017 --darknet-output <work>/proxy3/train
 python3 tools/extract_coco_proxy_classes.py \
   <coco>/annotations/instances_val2017.json \
   <coco>/annotations/instances_val2017_proxy3.json \
-  --images <coco>/val2017 --tfs-output <work>/proxy3/val
+  --images <coco>/val2017 --darknet-output <work>/proxy3/val
 ```
 
 The generated JSON files contain only images with at least one selected object
-and remap category IDs to contiguous IDs 1, 2, 3. The TFS directories contain
-relative image symlinks and zero-based YOLO text labels in the required order.
+and remap category IDs to contiguous IDs 1, 2, 3. The Darknet YOLO directories
+contain relative image symlinks and zero-based text labels in the required
+order. Model Zoo Services converts these labels to its serialized `.tfs`
+format when the chain starts.
 
 ## Train and quantize
+
+For Google Colab, upload and run
+`notebooks/SAFRAME_COCO_Proxy3_Colab.ipynb`. Select a GPU runtime and edit only
+`DRIVE_ROOT`. The notebook pins Model Zoo Services, checks for at least 45 GiB
+of ephemeral disk, downloads COCO outside Drive, runs a one-epoch smoke chain,
+and provides separate full-training and resume cells. Checkpoints, reports, and
+models are persisted below `DRIVE_ROOT/experiments`; credentials are never
+written by the notebook.
 
 Use the TensorFlow object-detection pipeline from STM32 AI Model Zoo Services.
 `training_coco_proxy_3class.yaml` is derived from the official
@@ -61,6 +71,16 @@ directory. Do not tune thresholds or training hyperparameters until this
 baseline has been recorded.
 
 ## Generate and import the STM32N6 application
+
+The CubeIDE download cache on the development machine already contains the
+required STEdgeAI packages. Install them outside the repository with:
+
+```bash
+tools/setup_stedgeai_core.sh \
+  /home/kobas/.cache/qt-installer-framework \
+  /home/kobas/.cache/saframe-stedgeai/4.0.1
+export STEDGEAI_PATH=/home/kobas/.cache/saframe-stedgeai/4.0.1/Utilities/linux/stedgeai
+```
 
 Point `MODEL_PATH` at the resulting quantized TFLite model and deploy with
 `modelzoo/deployment_n6_object_detection.yaml`, as documented in

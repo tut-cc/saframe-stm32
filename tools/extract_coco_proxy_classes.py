@@ -17,6 +17,7 @@ TARGETS = (
 
 def filter_coco(source: dict) -> tuple[dict, Counter]:
     source_to_target = {source_id: target_id for source_id, target_id, _ in TARGETS}
+    source_images = {image["id"]: image for image in source.get("images", [])}
     target_categories = [
         {"id": target_id, "name": name, "supercategory": "proxy_privacy"}
         for _, target_id, name in TARGETS
@@ -29,8 +30,20 @@ def filter_coco(source: dict) -> tuple[dict, Counter]:
         source_category = annotation.get("category_id")
         if source_category not in source_to_target:
             continue
+        image = source_images.get(annotation.get("image_id"))
+        if image is None:
+            continue
+        x, y, width, height = (float(value) for value in annotation["bbox"])
+        x_min = max(0.0, min(float(image["width"]), x))
+        y_min = max(0.0, min(float(image["height"]), y))
+        x_max = max(0.0, min(float(image["width"]), x + width))
+        y_max = max(0.0, min(float(image["height"]), y + height))
+        if (x_max <= x_min) or (y_max <= y_min):
+            continue
         converted = dict(annotation)
         converted["category_id"] = source_to_target[source_category]
+        converted["bbox"] = [x_min, y_min, x_max - x_min, y_max - y_min]
+        converted["area"] = (x_max - x_min) * (y_max - y_min)
         annotations.append(converted)
         image_ids.add(converted["image_id"])
         counts[converted["category_id"]] += 1
@@ -49,7 +62,7 @@ def filter_coco(source: dict) -> tuple[dict, Counter]:
     return result, counts
 
 
-def write_tfs_dataset(filtered: dict, source_images: Path, output: Path) -> None:
+def write_darknet_dataset(filtered: dict, source_images: Path, output: Path) -> None:
     output.mkdir(parents=True, exist_ok=True)
     images = {image["id"]: image for image in filtered["images"]}
     by_image: dict[int, list[dict]] = {image_id: [] for image_id in images}
@@ -90,8 +103,8 @@ def main() -> int:
     parser.add_argument("source", type=Path, help="COCO instances_*.json")
     parser.add_argument("output", type=Path, help="filtered COCO JSON")
     parser.add_argument("--images", type=Path, help="source COCO image directory")
-    parser.add_argument("--tfs-output", type=Path,
-                        help="write Model Zoo TFS image/YOLO-label directory")
+    parser.add_argument("--darknet-output", "--tfs-output", dest="darknet_output",
+                        type=Path, help="write a Darknet YOLO image/label directory")
     args = parser.parse_args()
 
     with args.source.open("r", encoding="utf-8") as stream:
@@ -101,16 +114,16 @@ def main() -> int:
     with args.output.open("w", encoding="utf-8") as stream:
         json.dump(result, stream, ensure_ascii=False, separators=(",", ":"))
         stream.write("\n")
-    if (args.tfs_output is not None):
+    if args.darknet_output is not None:
         if args.images is None:
-            parser.error("--images is required with --tfs-output")
-        write_tfs_dataset(result, args.images, args.tfs_output)
+            parser.error("--images is required with --darknet-output")
+        write_darknet_dataset(result, args.images, args.darknet_output)
 
     print(f"images={len(result['images'])} annotations={len(result['annotations'])}")
     for category in result["categories"]:
         print(f"class={category['id'] - 1} name={category['name']} annotations={counts[category['id']]}")
-    if args.tfs_output is not None:
-        print(f"tfs_output={args.tfs_output}")
+    if args.darknet_output is not None:
+        print(f"darknet_output={args.darknet_output}")
     return 0
 
 

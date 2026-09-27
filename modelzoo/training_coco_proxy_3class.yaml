@@ -16,8 +16,11 @@ model:
 operation_mode: chain_tqeb
 
 dataset:
-  dataset_name: coco
-  format: tfs
+  dataset_name: darknet_yolo
+  format: darknet_yolo
+  download_data: false
+  exclude_unlabeled: true
+  max_detections: 100
   class_names: [person, book, stop sign]
   train_images_path: ${oc.env:PROXY3_TRAIN_DIR}
   train_annotations_path: ${oc.env:PROXY3_TRAIN_DIR}
