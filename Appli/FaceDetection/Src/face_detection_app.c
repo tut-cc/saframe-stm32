@@ -38,6 +38,7 @@
 #include "crop_img.h"
 #include "privacy_filter.h"
 #include "face_detection_diagnostics.h"
+#include "model_signature.h"
 
 #undef assert
 #define assert(condition) APP_ASSERT(condition)
@@ -235,6 +236,11 @@ void FaceDetection_Run(void)
   const bool weights_valid = NetworkWeightsValid();
   tm_printf((UB *)"OD: model weights at 0x%08x: %s.\n",
             NETWORK_WEIGHTS_ADDRESS, weights_valid ? "OK" : "MISSING OR INVALID");
+  for (uint32_t i = 0; i < PRIVACY_PROXY_CLASS_COUNT; i++)
+  {
+    tm_printf((UB *)"OD: class %u %s => %s.\n", i,
+              PrivacyProxyClass_InternalName(i), PrivacyProxyClass_DisplayName(i));
+  }
 
   /*** NN Init ****************************************************************/
   uint32_t nn_in_len = 0;
@@ -489,21 +495,11 @@ static void RegisterApplicationInterrupts(void)
 
 static bool NetworkWeightsValid(void)
 {
-  static const struct
-  {
-    uint32_t offset;
-    uint32_t expected;
-  } signature[] = {
-    { 0x00000U, 0xFC98FD05U },
-    { 0x10000U, 0x02F39FDDU },
-    { 0x1A000U, 0x0EF13CDFU },
-  };
-
-  for (uint32_t i = 0; i < (sizeof(signature) / sizeof(signature[0])); i++)
+  for (uint32_t i = 0; i < MODEL_SIGNATURE_COUNT; i++)
   {
     const volatile uint32_t *word =
-        (const volatile uint32_t *)(NETWORK_WEIGHTS_ADDRESS + signature[i].offset);
-    if (*word != signature[i].expected)
+        (const volatile uint32_t *)(NETWORK_WEIGHTS_ADDRESS + model_signature[i].offset);
+    if (*word != model_signature[i].expected)
     {
       return false;
     }
@@ -711,14 +707,25 @@ static void PublishPrivacyResult(od_pp_out_t *postprocess,
     .vision_us = vision_us,
   };
 
-  result.detection_count = (uint32_t)postprocess->nb_detect;
-  if (result.detection_count > PRIVACY_MAX_DETECTIONS)
+  const uint32_t reported_count = (postprocess->nb_detect > 0) ?
+                                  (uint32_t)postprocess->nb_detect : 0U;
+  const uint32_t candidate_count = (reported_count > PRIVACY_MAX_DETECTIONS) ?
+                                   PRIVACY_MAX_DETECTIONS : reported_count;
+  for (uint32_t i = 0; i < candidate_count; i++)
   {
-    result.detection_count = PRIVACY_MAX_DETECTIONS;
-  }
-  for (uint32_t i = 0; i < result.detection_count; i++)
-  {
-    result.detections[i] = MakePrivacyRoi(&postprocess->pOutBuff[i]);
+    const int32_t class_index = postprocess->pOutBuff[i].class_index;
+    if (!PrivacyProxyClass_IsValid(class_index))
+    {
+      continue;
+    }
+    PrivacyRoi roi = MakePrivacyRoi(&postprocess->pOutBuff[i]);
+    if ((roi.width == 0U) || (roi.height == 0U))
+    {
+      continue;
+    }
+    roi.class_index = (uint8_t)class_index;
+    result.detections[result.detection_count++] = roi;
+    result.class_detection_count[(uint32_t)class_index]++;
   }
 
   assert(tk_loc_mtx(privacy_result_mutex_id, TMO_FEVR) == E_OK);
@@ -864,8 +871,11 @@ static void PrivacyRenderTask(INT stacd, void *exinf)
 
     UTIL_LCD_SetTextColor(UTIL_LCD_COLOR_WHITE);
     UTIL_LCD_SetBackColor(0xA0000000);
-    UTIL_LCDEx_PrintfAt(0, LINE(1), CENTER_MODE, "%s | Objects %u | %s",
-                       PrivacyFilter_ModeName(mode), result.detection_count,
+    UTIL_LCDEx_PrintfAt(0, LINE(1), CENTER_MODE, "%s | F%u D%u L%u | %s",
+                       PrivacyFilter_ModeName(mode),
+                       result.class_detection_count[PRIVACY_PROXY_FACE],
+                       result.class_detection_count[PRIVACY_PROXY_DOCUMENT],
+                       result.class_detection_count[PRIVACY_PROXY_LOGO],
                        publish ? "PUBLISHED" : "DROPPED");
     UTIL_LCDEx_PrintfAt(0, LINE(20), CENTER_MODE, "AI %uus | Total %uus | Drops %u",
                        result.inference_us, result.total_us, privacy_dropped_deadline);
@@ -933,11 +943,15 @@ static void ControlMonitorTask(INT stacd, void *exinf)
       assert(tk_unl_mtx(privacy_result_mutex_id) == E_OK);
       if (result_valid)
       {
-        tm_printf((UB *)"OD: frame=%u mode=%s detections=%u capture=%uus ai=%uus pp=%uus "
+        tm_printf((UB *)"OD: frame=%u mode=%s detections=%u face=%u document=%u logo=%u capture=%uus ai=%uus pp=%uus "
                          "vision=%uus inv=%uus filter=%uus clean=%uus render=%uus total=%uus "
                          "ltdc=%uus vblank=%uus published=%u dropped=%u consecutive=%u.\n",
                   result.frame_number, PrivacyFilter_ModeName(result.applied_mode),
-                  result.detection_count, result.capture_us, result.inference_us,
+                  result.detection_count,
+                  result.class_detection_count[PRIVACY_PROXY_FACE],
+                  result.class_detection_count[PRIVACY_PROXY_DOCUMENT],
+                  result.class_detection_count[PRIVACY_PROXY_LOGO],
+                  result.capture_us, result.inference_us,
                   result.postprocess_us, result.vision_us,
                   result.cache_invalidate_us, result.filter_us, result.cache_clean_us,
                   result.render_us, result.total_us, result.ltdc_us, result.vblank_us,

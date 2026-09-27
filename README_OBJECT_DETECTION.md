@@ -3,6 +3,11 @@
 STM32N6570-DK上のμT-Kernel 3.0 BSP2で、カメラ画像をNeural-ARTへ入力し、
 検出したperson領域をLCD上でマスクまたはモザイク化します。
 
+COCOの `person / book / stop sign` を代理的に
+`FACE / DOCUMENT / LOGO` として扱う320 x 320・3クラス版の学習・統合経路は
+[modelzoo/README_PROXY_3CLASS.md](modelzoo/README_PROXY_3CLASS.md)にあります。
+代理名はモデルの意味を変更するものではありません。
+
 ## 現在の固定構成
 
 - モデル: ST-YOLOX nano、480 x 480、UINT8入力／INT8出力、person 1クラス
@@ -61,6 +66,10 @@ tools/import_modelzoo_object_detection.sh \
   "$MODELZOO_SERVICES_ROOT/application_code/object_detection/STM32N6"
 ```
 
+importスクリプトは320 x 320 RGB、3クラス、クラス順
+`person / book / stop sign`を検査します。不一致な生成物は既存モデルを
+上書きする前に拒否し、新しい重みの実行時署名も自動生成します。
+
 YOLOv8を使う場合はYAMLの`model_type`を`yolov8n`へ変更します。YOLOv8、
 YOLOv11、YOLO26は同じ`POSTPROCESS_OD_YOLO_V8_UI`経路を使うため、対応する
 後処理ソースはこのリポジトリへ収録済みです。モデル変更後は必ずAppliを再ビルドし、
@@ -114,7 +123,7 @@ PRIVACY_TEST_RENDER_DELAY_MS=40
 切り替わらないことを確認できます。通常ビルドでは未定義、すなわち0 msです。
 
 現在の検証出力はSTM32N6570-DKのLCD 800 x 480です。HD 1280 x 720、letterbox、
-USB UVC、独自クラス学習済みモデルは後続のマイルストーンで実装します。
+USB UVC、実際の顔・書類・ロゴを学習したモデルは後続のマイルストーンです。
 
 ホスト上のプライバシーフィルタ境界テストは次で実行できます。
 

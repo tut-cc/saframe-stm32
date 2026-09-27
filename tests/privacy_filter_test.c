@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "privacy_filter.h"
 
@@ -144,6 +145,21 @@ static void test_deadline_boundary_and_tick_wrap(void)
   assert(PrivacyFrame_IsWithinDeadline(UINT32_MAX - 10U, 5U, 16U));
 }
 
+static void test_proxy_class_contract(void)
+{
+  assert(PrivacyProxyClass_IsValid(PRIVACY_PROXY_FACE));
+  assert(PrivacyProxyClass_IsValid(PRIVACY_PROXY_DOCUMENT));
+  assert(PrivacyProxyClass_IsValid(PRIVACY_PROXY_LOGO));
+  assert(!PrivacyProxyClass_IsValid(-1));
+  assert(!PrivacyProxyClass_IsValid(3));
+  assert(strcmp(PrivacyProxyClass_InternalName(PRIVACY_PROXY_FACE), "person") == 0);
+  assert(strcmp(PrivacyProxyClass_InternalName(PRIVACY_PROXY_DOCUMENT), "book") == 0);
+  assert(strcmp(PrivacyProxyClass_InternalName(PRIVACY_PROXY_LOGO), "stop sign") == 0);
+  assert(strcmp(PrivacyProxyClass_DisplayName(PRIVACY_PROXY_FACE), "FACE") == 0);
+  assert(strcmp(PrivacyProxyClass_DisplayName(PRIVACY_PROXY_DOCUMENT), "DOCUMENT") == 0);
+  assert(strcmp(PrivacyProxyClass_DisplayName(PRIVACY_PROXY_LOGO), "LOGO") == 0);
+}
+
 int main(void)
 {
   test_mask_and_clear();
@@ -152,6 +168,7 @@ int main(void)
   test_rgb565_mask_multiple_rois_and_clipping();
   test_rgb565_mosaic_and_zero_detections();
   test_deadline_boundary_and_tick_wrap();
+  test_proxy_class_contract();
   puts("privacy_filter_test: PASS");
   return 0;
 }

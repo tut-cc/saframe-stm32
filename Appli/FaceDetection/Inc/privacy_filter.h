@@ -9,6 +9,14 @@ extern "C" {
 #endif
 
 #define PRIVACY_MAX_DETECTIONS  (10U)
+#define PRIVACY_PROXY_CLASS_COUNT (3U)
+
+typedef enum
+{
+  PRIVACY_PROXY_FACE = 0,
+  PRIVACY_PROXY_DOCUMENT = 1,
+  PRIVACY_PROXY_LOGO = 2,
+} PrivacyProxyClass;
 
 typedef enum
 {
@@ -30,6 +38,7 @@ typedef struct
   int16_t y;
   uint16_t width;
   uint16_t height;
+  uint8_t class_index;
 } PrivacyRoi;
 
 typedef struct
@@ -54,6 +63,7 @@ typedef struct
   uint32_t dropped_deadline;
   uint32_t consecutive_drops;
   uint32_t detection_count;
+  uint32_t class_detection_count[PRIVACY_PROXY_CLASS_COUNT];
   PrivacyRoi detections[PRIVACY_MAX_DETECTIONS];
 } PrivacyFrameResult;
 
@@ -82,6 +92,9 @@ bool PrivacyFrame_IsWithinDeadline(uint32_t started_at,
                                    uint32_t completed_at,
                                    uint32_t deadline_cycles);
 const char *PrivacyFilter_ModeName(PrivacyMode mode);
+bool PrivacyProxyClass_IsValid(int32_t class_index);
+const char *PrivacyProxyClass_InternalName(uint32_t class_index);
+const char *PrivacyProxyClass_DisplayName(uint32_t class_index);
 
 #ifdef __cplusplus
 }

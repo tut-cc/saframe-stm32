@@ -265,3 +265,25 @@ const char *PrivacyFilter_ModeName(PrivacyMode mode)
 {
   return (mode == PRIVACY_MODE_MOSAIC) ? "MOSAIC" : "MASK";
 }
+
+bool PrivacyProxyClass_IsValid(int32_t class_index)
+{
+  return (class_index >= 0) &&
+         ((uint32_t)class_index < PRIVACY_PROXY_CLASS_COUNT);
+}
+
+const char *PrivacyProxyClass_InternalName(uint32_t class_index)
+{
+  static const char *const names[PRIVACY_PROXY_CLASS_COUNT] = {
+    "person", "book", "stop sign"
+  };
+  return (class_index < PRIVACY_PROXY_CLASS_COUNT) ? names[class_index] : "invalid";
+}
+
+const char *PrivacyProxyClass_DisplayName(uint32_t class_index)
+{
+  static const char *const names[PRIVACY_PROXY_CLASS_COUNT] = {
+    "FACE", "DOCUMENT", "LOGO"
+  };
+  return (class_index < PRIVACY_PROXY_CLASS_COUNT) ? names[class_index] : "INVALID";
+}

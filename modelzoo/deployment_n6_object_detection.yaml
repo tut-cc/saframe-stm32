@@ -7,7 +7,9 @@ model:
   model_type: st_yoloxn
 
 dataset:
-  class_names: [person]
+  # Model output order. Keep this in sync with the filtered COCO dataset and
+  # the proxy labels in privacy_filter.c.
+  class_names: [person, book, stop sign]
 
 preprocessing:
   resizing:

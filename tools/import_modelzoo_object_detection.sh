@@ -12,6 +12,7 @@ config_source="$source_root/Application/STM32N6570-DK/Inc/app_config.h"
 project_root=$(git rev-parse --show-toplevel)
 model_target="$project_root/Appli/FaceDetection/Model"
 config_target="$project_root/Appli/FaceDetection/Inc/app_config.h"
+signature_target="$project_root/Appli/FaceDetection/Inc/model_signature.h"
 
 required=(network.c network_data.hex network_data.xSPI2.bin network_ecblobs.h stai_network.c stai_network.h)
 for file in "${required[@]}"; do
@@ -25,10 +26,20 @@ if [[ ! -f "$config_source" ]]; then
   exit 1
 fi
 
+python3 "$project_root/tools/verify_proxy_model_artifacts.py" \
+  "$model_source" "$config_source"
+
+signature_tmp=$(mktemp)
+trap 'rm -f "$signature_tmp"' EXIT
+python3 "$project_root/tools/generate_model_signature.py" \
+  "$model_source/network_data.hex" "$signature_tmp"
+
 for file in "${required[@]}"; do
   cp "$model_source/$file" "$model_target/$file"
 done
 cp "$config_source" "$config_target"
+cp "$signature_tmp" "$signature_target"
 
 echo "Imported Model Zoo object-detection config and Neural-ART artifacts."
-echo "Review: git diff -- Appli/FaceDetection/Inc/app_config.h Appli/FaceDetection/Model"
+echo "Imported contract: 320x320 RGB, classes [person, book, stop sign]."
+echo "Review: git diff -- Appli/FaceDetection/Inc Appli/FaceDetection/Model"
