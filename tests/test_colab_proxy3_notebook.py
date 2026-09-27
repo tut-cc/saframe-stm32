@@ -47,7 +47,9 @@ class ColabProxy3NotebookTest(unittest.TestCase):
         self.assertIn("0f6210ed5156126b782e1c43249063a477484b20", self.source)
         self.assertIn("CLASS_NAMES = ('person', 'book', 'stop sign')", self.source)
         self.assertIn("if free_gib < 45", self.source)
-        self.assertIn("tf.config.list_physical_devices('GPU')", self.source)
+        self.assertIn("saframe-modelzoo-py311", self.source)
+        self.assertIn("uv, 'python', 'install', '3.11'", self.source)
+        self.assertIn("MZ_PYTHON, '-c'", self.source)
         self.assertIn("drive.mount('/content/drive')", self.source)
         self.assertIn("operation_mode: chain_tqe", self.source)
         self.assertIn("dataset_name: darknet_yolo", self.source)
@@ -60,6 +62,7 @@ class ColabProxy3NotebookTest(unittest.TestCase):
         self.assertIn("run_training('full', epochs=500, resume=True)", self.source)
         self.assertIn("training.resume_training=true", self.source)
         self.assertIn("last_model.keras", self.source)
+        self.assertIn("command = [MZ_PYTHON", self.source)
 
 
 if __name__ == "__main__":
