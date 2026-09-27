@@ -38,6 +38,37 @@ format when the chain starts.
 
 ## Train and quantize
 
+### RunPod (recommended)
+
+Create a GPU Pod with a **100 GB or larger Network Volume** mounted at
+`/workspace`. Use the RunPod PyTorch template with one NVIDIA GPU; 24 GB VRAM
+is recommended and the script rejects GPUs below 16 GB. A 20 GB container disk
+is sufficient because all large and reusable files live on the Network Volume.
+Place this repository anywhere on the Pod, and run:
+
+```bash
+bash tools/runpod_proxy3.sh all
+```
+
+The single command installs host prerequisites and an isolated Python 3.11
+environment, pins Model Zoo Services to `0f6210ed...`, downloads and validates
+COCO, prepares the proxy dataset, runs the one-epoch smoke chain, and then
+starts the 500-epoch baseline. Everything reusable is stored below
+`/workspace/saframe-proxy3`; the repository itself can be outside the volume.
+
+If the Pod stops during training, attach the same Network Volume and run:
+
+```bash
+bash tools/runpod_proxy3.sh resume
+```
+
+Other entry points are `setup`, `prepare`, `smoke`, `train`, and `status`.
+Override the persistent root only when necessary with
+`SAFRAME_RUNPOD_ROOT=/workspace/<name>`. Do not terminate a Pod until `status`
+shows that the required model artifacts are on the Network Volume.
+
+### Google Colab (legacy)
+
 For Google Colab, upload and run
 `notebooks/SAFRAME_COCO_Proxy3_Colab.ipynb`. Select a GPU runtime and edit only
 `DRIVE_ROOT`. The notebook pins Model Zoo Services, checks for at least 45 GiB
@@ -48,6 +79,9 @@ written by the notebook. It creates an isolated Python 3.11 environment because
 the pinned TensorFlow 2.18 package does not provide a Python 3.13 wheel.
 The isolated processes use Matplotlib's non-interactive `Agg` backend so they
 do not inherit Colab's kernel-only `matplotlib_inline` backend.
+COCO downloads are written to temporary `.part` files and accepted only after
+ZIP validation; an interrupted or HTML response left from an earlier attempt
+is removed and downloaded again.
 
 Use the TensorFlow object-detection pipeline from STM32 AI Model Zoo Services.
 `training_coco_proxy_3class.yaml` is derived from the official

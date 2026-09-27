@@ -62,6 +62,14 @@ class ColabProxy3NotebookTest(unittest.TestCase):
         setup = next(source for source in self.code if "headless_env" in source)
         self.assertLess(setup.index("import os"), setup.index("os.environ"))
 
+    def test_download_is_validated_before_extraction(self):
+        prepare = next(source for source in self.code if "def download_zip" in source)
+        self.assertIn("zipfile.is_zipfile(archive)", prepare)
+        self.assertIn("--retry-all-errors", prepare)
+        self.assertIn("partial.replace(archive)", prepare)
+        self.assertLess(prepare.index("zipfile.is_zipfile(partial)"),
+                        prepare.index("partial.replace(archive)"))
+
     def test_smoke_full_and_resume_cells_exist(self):
         self.assertIn("run_training('smoke', epochs=1", self.source)
         self.assertIn("run_training('full', epochs=500)\n", self.source)
