@@ -58,6 +58,10 @@ class ColabProxy3NotebookTest(unittest.TestCase):
         self.assertIn("format: darknet_yolo", self.source)
         self.assertIn("quantization_output_type: int8", self.source)
 
+    def test_setup_cell_imports_os_before_reading_environment(self):
+        setup = next(source for source in self.code if "headless_env" in source)
+        self.assertLess(setup.index("import os"), setup.index("os.environ"))
+
     def test_smoke_full_and_resume_cells_exist(self):
         self.assertIn("run_training('smoke', epochs=1", self.source)
         self.assertIn("run_training('full', epochs=500)\n", self.source)
