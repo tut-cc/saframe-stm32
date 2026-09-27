@@ -46,6 +46,8 @@ and provides separate full-training and resume cells. Checkpoints, reports, and
 models are persisted below `DRIVE_ROOT/experiments`; credentials are never
 written by the notebook. It creates an isolated Python 3.11 environment because
 the pinned TensorFlow 2.18 package does not provide a Python 3.13 wheel.
+The isolated processes use Matplotlib's non-interactive `Agg` backend so they
+do not inherit Colab's kernel-only `matplotlib_inline` backend.
 
 Use the TensorFlow object-detection pipeline from STM32 AI Model Zoo Services.
 `training_coco_proxy_3class.yaml` is derived from the official

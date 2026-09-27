@@ -50,6 +50,8 @@ class ColabProxy3NotebookTest(unittest.TestCase):
         self.assertIn("saframe-modelzoo-py311", self.source)
         self.assertIn("uv, 'python', 'install', '3.11'", self.source)
         self.assertIn("MZ_PYTHON, '-c'", self.source)
+        self.assertIn("MPLBACKEND='Agg'", self.source)
+        self.assertIn("env=headless_env", self.source)
         self.assertIn("drive.mount('/content/drive')", self.source)
         self.assertIn("operation_mode: chain_tqe", self.source)
         self.assertIn("dataset_name: darknet_yolo", self.source)
