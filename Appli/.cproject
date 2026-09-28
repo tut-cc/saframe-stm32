@@ -60,6 +60,9 @@
 									<listOptionValue builtIn="false" value="LL_ATON_RT_MODE=LL_ATON_RT_ASYNC"/>
 									<listOptionValue builtIn="false" value="LL_ATON_SW_FALLBACK"/>
 									<listOptionValue builtIn="false" value="LL_ATON_DBG_BUFFER_INFO_EXCLUDED=1"/>
+									<listOptionValue builtIn="false" value="UVC_LIB_USE_STM32_USBD"/>
+									<listOptionValue builtIn="false" value="USE_USB_HS"/>
+									<listOptionValue builtIn="false" value="USBL_PACKET_PER_MICRO_FRAME=1"/>
 								</option>
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.includepaths.567357119" name="Include paths (-I)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.includepaths" useByScannerDiscovery="false" valueType="includePath">
 									<listOptionValue builtIn="false" value="../Core/Inc"/>
@@ -91,6 +94,11 @@
 									<listOptionValue builtIn="false" value="../FaceDetection/Vendor/EdgeAI/Devices/STM32N6xx"/>
 									<listOptionValue builtIn="false" value="../FaceDetection/Vendor/CMSIS/DSP/Include"/>
 									<listOptionValue builtIn="false" value="../FaceDetection/Vendor/Utilities/lcd"/>
+									<listOptionValue builtIn="false" value="../FaceDetection/Vendor/UVC/uvcl/Inc"/>
+									<listOptionValue builtIn="false" value="../FaceDetection/Vendor/UVC/uvcl/Inc/usbd"/>
+									<listOptionValue builtIn="false" value="../FaceDetection/Vendor/UVC/uvcl/Src"/>
+									<listOptionValue builtIn="false" value="../FaceDetection/Vendor/UVC/uvcl/Src/usbd"/>
+									<listOptionValue builtIn="false" value="../FaceDetection/Vendor/UVC/STM32_USB_Device_Library/Core/Inc"/>
 								</option>
 								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c.770108443" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c"/>
 							</tool>
@@ -135,6 +143,8 @@
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="FaceDetection/Vendor/Postprocess/Src"/>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="FaceDetection/Vendor/EdgeAI"/>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="FaceDetection/Vendor/Utilities/lcd"/>
+						<entry excluding="usbx" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="FaceDetection/Vendor/UVC/uvcl/Src"/>
+						<entry excluding="usbd_conf_template.c|usbd_desc_template.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="FaceDetection/Vendor/UVC/STM32_USB_Device_Library/Core/Src"/>
 					</sourceEntries>
 				</configuration>
 			</storageModule>
@@ -197,6 +207,9 @@
 									<listOptionValue builtIn="false" value="LL_ATON_RT_MODE=LL_ATON_RT_ASYNC"/>
 									<listOptionValue builtIn="false" value="LL_ATON_SW_FALLBACK"/>
 									<listOptionValue builtIn="false" value="LL_ATON_DBG_BUFFER_INFO_EXCLUDED=1"/>
+									<listOptionValue builtIn="false" value="UVC_LIB_USE_STM32_USBD"/>
+									<listOptionValue builtIn="false" value="USE_USB_HS"/>
+									<listOptionValue builtIn="false" value="USBL_PACKET_PER_MICRO_FRAME=1"/>
 								</option>
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.includepaths.2145837724" name="Include paths (-I)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.includepaths" useByScannerDiscovery="false" valueType="includePath">
 									<listOptionValue builtIn="false" value="../Core/Inc"/>
@@ -228,6 +241,11 @@
 									<listOptionValue builtIn="false" value="../FaceDetection/Vendor/EdgeAI/Devices/STM32N6xx"/>
 									<listOptionValue builtIn="false" value="../FaceDetection/Vendor/CMSIS/DSP/Include"/>
 									<listOptionValue builtIn="false" value="../FaceDetection/Vendor/Utilities/lcd"/>
+									<listOptionValue builtIn="false" value="../FaceDetection/Vendor/UVC/uvcl/Inc"/>
+									<listOptionValue builtIn="false" value="../FaceDetection/Vendor/UVC/uvcl/Inc/usbd"/>
+									<listOptionValue builtIn="false" value="../FaceDetection/Vendor/UVC/uvcl/Src"/>
+									<listOptionValue builtIn="false" value="../FaceDetection/Vendor/UVC/uvcl/Src/usbd"/>
+									<listOptionValue builtIn="false" value="../FaceDetection/Vendor/UVC/STM32_USB_Device_Library/Core/Inc"/>
 								</option>
 								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c.214638825" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c"/>
 							</tool>
@@ -272,6 +290,8 @@
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="FaceDetection/Vendor/Postprocess/Src"/>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="FaceDetection/Vendor/EdgeAI"/>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="FaceDetection/Vendor/Utilities/lcd"/>
+						<entry excluding="usbx" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="FaceDetection/Vendor/UVC/uvcl/Src"/>
+						<entry excluding="usbd_conf_template.c|usbd_desc_template.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="FaceDetection/Vendor/UVC/STM32_USB_Device_Library/Core/Src"/>
 					</sourceEntries>
 				</configuration>
 			</storageModule>

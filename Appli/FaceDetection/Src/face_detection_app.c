@@ -40,6 +40,7 @@
 #include "privacy_pipeline_queue.h"
 #include "face_detection_diagnostics.h"
 #include "model_signature.h"
+#include "usb_webcam.h"
 
 #undef assert
 #define assert(condition) APP_ASSERT(condition)
@@ -205,6 +206,7 @@ static ID camera_frame_flag_id;
 
 static void CSI_InterruptHandler(UINT intno);
 static void DCMIPP_InterruptHandler(UINT intno);
+static void USB1_InterruptHandler(UINT intno);
 static void RegisterApplicationInterrupts(void);
 static bool NetworkWeightsValid(void);
 
@@ -257,6 +259,9 @@ void FaceDetection_Run(void)
   assert(privacy_display_mutex_id > 0);
   RegisterApplicationInterrupts();
   tm_putstring((UB *)"OD: application interrupts registered.\n");
+  UsbWebcam_Init();
+  tm_printf((UB *)"UVC: USB1/CN18 ready; YUY2 %ux%u@%u fps.\n",
+            USB_WEBCAM_WIDTH, USB_WEBCAM_HEIGHT, USB_WEBCAM_FPS);
 
   const bool weights_valid = NetworkWeightsValid();
   tm_printf((UB *)"OD: model weights at 0x%08x: %s.\n",
@@ -473,6 +478,12 @@ static void DCMIPP_InterruptHandler(UINT intno)
   HAL_DCMIPP_IRQHandler(CMW_CAMERA_GetDCMIPPHandle());
 }
 
+static void USB1_InterruptHandler(UINT intno)
+{
+  (void)intno;
+  UsbWebcam_IRQHandler();
+}
+
 static void RegisterApplicationInterrupts(void)
 {
   const T_DINT csi_interrupt = {
@@ -487,10 +498,15 @@ static void RegisterApplicationInterrupts(void)
     .intatr = TA_ASM,
     .inthdr = (FP)NPU0_IRQHandler,
   };
+  const T_DINT usb1_interrupt = {
+    .intatr = TA_HLNG,
+    .inthdr = (FP)USB1_InterruptHandler,
+  };
 
   assert(tk_def_int(CSI_IRQn, &csi_interrupt) == E_OK);
   assert(tk_def_int(DCMIPP_IRQn, &dcmipp_interrupt) == E_OK);
   assert(tk_def_int(NPU0_IRQn, &npu_interrupt) == E_OK);
+  assert(tk_def_int(USB1_OTG_HS_IRQn, &usb1_interrupt) == E_OK);
 }
 
 static bool NetworkWeightsValid(void)
@@ -604,6 +620,7 @@ static void Security_Config(void)
   HAL_RIF_RIMC_ConfigMasterAttributes(RIF_MASTER_INDEX_DCMIPP, &RIMC_master);
   HAL_RIF_RIMC_ConfigMasterAttributes(RIF_MASTER_INDEX_LTDC1 , &RIMC_master);
   HAL_RIF_RIMC_ConfigMasterAttributes(RIF_MASTER_INDEX_LTDC2 , &RIMC_master);
+  HAL_RIF_RIMC_ConfigMasterAttributes(RIF_MASTER_INDEX_OTG1, &RIMC_master);
   HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RISC_PERIPH_INDEX_NPU , RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV);
   HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RISC_PERIPH_INDEX_DMA2D , RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV);
   HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RISC_PERIPH_INDEX_CSI    , RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV);
@@ -611,6 +628,7 @@ static void Security_Config(void)
   HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RISC_PERIPH_INDEX_LTDC   , RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV);
   HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RISC_PERIPH_INDEX_LTDCL1 , RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV);
   HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RISC_PERIPH_INDEX_LTDCL2 , RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV);
+  HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RISC_PERIPH_INDEX_OTG1HS , RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV);
 }
 
 static void IAC_Config(void)
@@ -991,6 +1009,12 @@ static void PrivacyRenderTask(INT stacd, void *exinf)
     result.consecutive_drops = privacy_consecutive_drops;
     assert(tk_unl_mtx(privacy_display_mutex_id) == E_OK);
 
+    if (publish)
+    {
+      (void)UsbWebcam_SubmitRgb565((const uint16_t *)working_buffer,
+                                   lcd_bg_area.XSize, lcd_bg_area.YSize);
+    }
+
     assert(tk_loc_mtx(privacy_result_mutex_id, TMO_FEVR) == E_OK);
     if (publish)
     {
@@ -1072,7 +1096,8 @@ static void ControlMonitorTask(INT stacd, void *exinf)
                          "ltdc=%uus vblank=%uus buffer_wait=%uus infer_wait=%uus render_wait=%uus "
                          "captured_fps=%u.%u inferred_fps=%u.%u processed_fps=%u.%u published_fps=%u.%u "
                          "capture_q=%u/%u render_q=%u/%u backpressure_skips=%u warmup=%s "
-                         "published=%u dropped=%u consecutive=%u max_consecutive=%u max_published_total=%uus.\n",
+                         "published=%u dropped=%u consecutive=%u max_consecutive=%u max_published_total=%uus "
+                         "uvc=%s uvc_submitted=%u uvc_dropped=%u.\n",
                   result.frame_number, PrivacyFilter_ModeName(result.applied_mode),
                   result.detection_count,
                   result.class_detection_count[PRIVACY_PROXY_FACE],
@@ -1094,7 +1119,9 @@ static void ControlMonitorTask(INT stacd, void *exinf)
                   privacy_warmup_complete ? "done" : "active",
                   result.published_frames, result.dropped_deadline,
                   result.consecutive_drops, privacy_maximum_consecutive_drops,
-                  privacy_maximum_published_total_us);
+                  privacy_maximum_published_total_us,
+                  UsbWebcam_IsStreaming() ? "streaming" : "idle",
+                  UsbWebcam_SubmittedFrames(), UsbWebcam_DroppedFrames());
         previous_captured = captured;
         previous_inferred = inferred;
         previous_processed = processed;

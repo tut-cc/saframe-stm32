@@ -48,3 +48,18 @@
 - ライセンス: `Drivers/STM32N6xx_HAL_Driver/LICENSE.txt`、
   `Drivers/CMSIS/LICENSE`、`Drivers/CMSIS/Device/ST/STM32N6xx/LICENSE.txt`、
   および各ファイルのライセンス表示を参照
+
+## STM32N6 UVC Library / STM32 USB Device Library
+
+- 提供者: STMicroelectronics
+- UVC Library取得元: https://github.com/STMicroelectronics/STM32N6-GettingStarted-ObjectDetection
+- UVC Library固定コミット: `4240acbeb7febd335cf128ebe56f26790cabbdd3`
+  (`uvcl` v3.0.1)
+- STM32 USB Device Library: https://github.com/STMicroelectronics/stm32-mw-usb-device
+- STM32 USB Device Library固定コミット: `2a0a3521ac4d84e6e494d37bed615e2d36c373f5`
+  (`v2.11.4`、Coreのみ)
+- 使用範囲: USB UVCディスクリプタ、UVCフレーム転送、USB Device Core、
+  STM32N6 PCD/LL USBドライバ
+- ライセンス: `Appli/FaceDetection/Vendor/UVC/uvcl/LICENSE`、
+  `Appli/FaceDetection/Vendor/UVC/STM32_USB_Device_Library/LICENSE.md`、
+  および各ソースファイルのライセンス表示を参照

@@ -145,8 +145,22 @@ PRIVACY_TEST_RENDER_DELAY_MS=40
 この定義では安全化処理へ40 msの試験遅延が入り、`dropped`が増えてLCD背景が
 切り替わらないことを確認できます。通常ビルドでは未定義、すなわち0 msです。
 
-現在の検証出力はSTM32N6570-DKのLCD 800 x 480です。HD 1280 x 720、letterbox、
-USB UVC、実際の顔・書類・ロゴを学習したモデルは後続のマイルストーンです。
+安全化済みフレームはLCDに加えて、USB1 Type-CコネクタCN18からUVC Webカメラ
+として出力します。UVC形式は320 x 240、YUY2、10 fpsです。800 x 480のRGB565
+表示フレームの中央4:3領域を縮小してUSB専用二面バッファへ変換するため、USB送信中の
+バッファがDCMIPPに再利用されることはありません。ホストが未接続、ストリーミング
+停止中、またはUSB送信が追いつかない場合はUSBフレームだけを破棄し、LCDの公開
+処理は継続します。RAWフレームをUSBへ渡す経路はありません。
+
+USBのHAL/UVC処理は割込み内ではなく、LCDのRender/Captureより低い優先度の専用
+タスクで行います。USBホストがストリーミングを開始してもLCD更新を優先します。
+
+CN18とホストをUSB Type-Cケーブルで接続し、OSのカメラアプリから`STM32 uvc`
+デバイスを選択してください。T-Monitorの`uvc=streaming`、`uvc_submitted`、
+`uvc_dropped`で接続状態と送信状況を確認できます。実機でUSB列挙、10 fps映像、
+LCD更新との同時動作を確認済みです。長時間連続動作は未確認です。HD 1280 x 720、
+letterbox、MJPEG/H.264、および実際の顔・
+書類・ロゴを学習したモデルは後続のマイルストーンです。
 
 ホスト上のプライバシーフィルタ境界テストは次で実行できます。
 
@@ -155,6 +169,15 @@ cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
   -IAppli/FaceDetection/Inc tests/privacy_filter_test.c \
   Appli/FaceDetection/Src/privacy_filter.c -o /tmp/privacy_filter_test
 ASAN_OPTIONS=detect_leaks=0 /tmp/privacy_filter_test
+```
+
+RGB565からYUY2への変換と中央クロップは次でホスト試験できます。
+
+```bash
+cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
+  -IAppli/FaceDetection/Inc tests/usb_webcam_conversion_test.c \
+  Appli/FaceDetection/Src/usb_webcam_convert.c -o /tmp/usb_webcam_conversion_test
+ASAN_OPTIONS=detect_leaks=0 /tmp/usb_webcam_conversion_test
 ```
 
 480 x 480モデルでは推論約28.5 ms、NNコピーを含む合計約35 msとなり、33 ms期限を
