@@ -117,20 +117,24 @@ od_pp_out_t pp_output;
 #define DCMIPP_NN_NEEDS_CROP 1
 #define DCMIPP_OUT_NN_LEN (ALIGN_TO_16(STAI_NETWORK_IN_1_WIDTH * STAI_NETWORK_IN_1_CHANNEL) * STAI_NETWORK_IN_1_HEIGHT)
 #define DCMIPP_OUT_NN_BUFF_LEN (DCMIPP_OUT_NN_LEN + 32 - DCMIPP_OUT_NN_LEN%32)
-
-__attribute__ ((aligned (32)))
-static uint8_t dcmipp_out_nn[DCMIPP_OUT_NN_BUFF_LEN];
+#define NN_CAPTURE_BUFFER_SIZE DCMIPP_OUT_NN_BUFF_LEN
 #else
 #define DCMIPP_NN_NEEDS_CROP 0
+#define NN_CAPTURE_BUFFER_SIZE STAI_NETWORK_IN_1_SIZE_BYTES
 #endif
+
+__attribute__ ((section (".psram_bss")))
+__attribute__ ((aligned (32)))
+static uint8_t nn_capture_buffer[PRIVACY_NN_BUFFER_COUNT][NN_CAPTURE_BUFFER_SIZE];
 
 /* model */
 STAI_NETWORK_CONTEXT_DECLARE(network_context, STAI_NETWORK_CONTEXT_SIZE)
 /* Lcd Background Buffer */
 __attribute__ ((section (".psram_bss")))
 __attribute__ ((aligned (32)))
-static uint8_t lcd_bg_buffer[3][LCD_BG_FRAMEBUFFER_SIZE];
+static uint8_t lcd_bg_buffer[PRIVACY_BACKGROUND_BUFFER_COUNT][LCD_BG_FRAMEBUFFER_SIZE];
 static PrivacyBufferPool privacy_buffer_pool;
+static PrivacyNnBufferPool privacy_nn_buffer_pool;
 /* Lcd Foreground Buffer */
 __attribute__ ((section (".psram_bss")))
 __attribute__ ((aligned (32)))
@@ -140,19 +144,27 @@ static int lcd_fg_buffer_rd_idx;
 static ID privacy_result_mutex_id;
 static ID privacy_display_mutex_id;
 static ID privacy_free_buffer_sem_id;
+static ID privacy_free_nn_buffer_sem_id;
+static ID privacy_capture_sem_id;
 static ID privacy_result_sem_id;
+static PrivacyCaptureQueue privacy_capture_queue;
 static PrivacyResultQueue privacy_result_queue;
 static PrivacyFrameResult privacy_completed_result;
 static bool privacy_completed_result_valid;
 static volatile PrivacyMode privacy_mode = PRIVACY_MODE_MASK;
 static volatile uint32_t privacy_published_frames;
+static volatile uint32_t privacy_published_total_frames;
 static volatile uint32_t privacy_captured_frames;
+static volatile uint32_t privacy_inferred_frames;
 static volatile uint32_t privacy_processed_frames;
 static volatile uint32_t privacy_dropped_deadline;
 static volatile uint32_t privacy_consecutive_drops;
 static volatile uint32_t privacy_maximum_consecutive_drops;
 static volatile uint32_t privacy_capture_backpressure_skips;
-static uint32_t privacy_buffer_wait_us[3];
+static volatile uint32_t privacy_maximum_published_total_us;
+static volatile bool privacy_warmup_complete;
+static uint32_t privacy_buffer_wait_us[PRIVACY_BACKGROUND_BUFFER_COUNT];
+static uint32_t camera_pitch_nn;
 static volatile uint32_t camera_pipe_frames[3];
 
 static void SystemClock_Config(void);
@@ -172,12 +184,14 @@ static void PerformanceCounter_Init(void);
 static uint32_t PerformanceCounter_Now(void);
 static uint32_t PerformanceCounter_ToUs(uint32_t cycles);
 static uint32_t PerformanceCounter_DeadlineCycles(void);
-static uint32_t AcquireFreeBackgroundBuffer(void);
+static void CaptureTask(INT stacd, void *exinf);
 static void PublishPrivacyResult(od_pp_out_t *postprocess,
                                  uint32_t frame_number,
                                  uint32_t buffer_index,
                                  uint32_t deadline_started_cycles,
                                  uint32_t capture_us,
+                                 uint32_t capture_queue_wait_us,
+                                 uint32_t nn_copy_us,
                                  uint32_t inference_us,
                                  uint32_t postprocess_us,
                                  uint32_t vision_us);
@@ -194,9 +208,16 @@ static bool NetworkWeightsValid(void);
 extern void NPU0_IRQHandler(void);
 
 static const T_CTSK privacy_render_task_config = {
-  .itskpri = 8,
+  .itskpri = 3,
   .stksz = 16 * 1024,
   .task = PrivacyRenderTask,
+  .tskatr = TA_HLNG | TA_RNG3,
+};
+
+static const T_CTSK capture_task_config = {
+  .itskpri = 4,
+  .stksz = 8 * 1024,
+  .task = CaptureTask,
   .tskatr = TA_HLNG | TA_RNG3,
 };
 
@@ -261,8 +282,7 @@ void FaceDetection_Run(void)
   app_postprocess_init(&pp_params, &info);
 
   /*** Camera Init ************************************************************/
-  uint32_t pitch_nn = 0;
-  CameraPipeline_Init(&lcd_bg_area.XSize, &lcd_bg_area.YSize, &pitch_nn);
+  CameraPipeline_Init(&lcd_bg_area.XSize, &lcd_bg_area.YSize, &camera_pitch_nn);
   tm_putstring((UB *)"OD: camera pipeline initialized.\n");
 
   LCD_init();
@@ -293,68 +313,50 @@ void FaceDetection_Run(void)
   tm_putstring((UB *)"OD: camera primed; waiting for snapshot pipes.\n");
   StartPrivacyTasks();
 
-  /*** App Loop ***************************************************************/
-  uint32_t frame_count = 0;
+  /*** Inference Loop *********************************************************/
   while (1)
   {
-    g_app_diagnostic_stage = APP_STAGE_CAMERA_CAPTURE;
-    CameraPipeline_IspUpdate();
+    assert(tk_wai_sem(privacy_capture_sem_id, 1, TMO_FEVR) == E_OK);
+    PrivacyCaptureJob job;
+    assert(tk_loc_mtx(privacy_result_mutex_id, TMO_FEVR) == E_OK);
+    assert(PrivacyCaptureQueue_Pop(&privacy_capture_queue, &job));
+    assert(PrivacyBufferPool_MarkInference(&privacy_buffer_pool,
+                                           job.rgb_buffer_index));
+    assert(PrivacyNnBufferPool_MarkCopying(&privacy_nn_buffer_pool,
+                                           job.nn_buffer_index));
+    assert(tk_unl_mtx(privacy_result_mutex_id) == E_OK);
+    const uint32_t capture_queue_wait_us = PerformanceCounter_ToUs(
+        PerformanceCounter_Now() - job.capture_completed_cycles);
 
-    const uint32_t working_index = AcquireFreeBackgroundBuffer();
-    const uint32_t capture_started_cycles = PerformanceCounter_Now();
-    CameraPipeline_DisplayPipe_Start(lcd_bg_buffer[working_index], CMW_MODE_SNAPSHOT);
-
+    const uint32_t copy_started_cycles = PerformanceCounter_Now();
+    SCB_InvalidateDCache_by_Addr(nn_capture_buffer[job.nn_buffer_index],
+                                NN_CAPTURE_BUFFER_SIZE);
 #if DCMIPP_NN_NEEDS_CROP
-    /* Start NN camera single capture Snapshot into intermediate buffer */
-    CameraPipeline_NNPipe_Start(dcmipp_out_nn, CMW_MODE_SNAPSHOT);
+    img_crop(nn_capture_buffer[job.nn_buffer_index], nn_in, camera_pitch_nn,
+             STAI_NETWORK_IN_1_WIDTH, STAI_NETWORK_IN_1_HEIGHT,
+             STAI_NETWORK_IN_1_CHANNEL);
 #else
-    /* Start NN camera single capture Snapshot directly into NN input */
-    CameraPipeline_NNPipe_Start(nn_in, CMW_MODE_SNAPSHOT);
+    memcpy(nn_in, nn_capture_buffer[job.nn_buffer_index], nn_in_len);
 #endif
-
-    UINT frame_pattern;
-    ER ercd = tk_wai_flg(camera_frame_flag_id,
-                         DISPLAY_FRAME_READY | NN_FRAME_READY,
-                         TWF_ANDW | TWF_BITCLR, &frame_pattern, CAMERA_FRAME_TIMEOUT_MS);
-    if (ercd == E_TMOUT)
-    {
-      tm_printf((UB *)"OD: ERROR: snapshot timeout (pipe1=%u pipe2=%u).\n",
-                camera_pipe_frames[DCMIPP_PIPE1], camera_pipe_frames[DCMIPP_PIPE2]);
-      Display_Status("ERROR: camera timeout", UTIL_LCD_COLOR_RED);
-      while (1)
-      {
-        CameraPipeline_IspUpdate();
-        (void)tk_dly_tsk(100);
-      }
-    }
-    assert(ercd == E_OK);
-
-    const uint32_t capture_completed_cycles = PerformanceCounter_Now();
-    privacy_captured_frames++;
-    const uint32_t capture_us = PerformanceCounter_ToUs(
-        capture_completed_cycles - capture_started_cycles);
+    SCB_CleanInvalidateDCache_by_Addr(nn_in, nn_in_len);
+    const uint32_t nn_copy_us = PerformanceCounter_ToUs(
+        PerformanceCounter_Now() - copy_started_cycles);
+    assert(tk_loc_mtx(privacy_result_mutex_id, TMO_FEVR) == E_OK);
+    assert(PrivacyNnBufferPool_Release(&privacy_nn_buffer_pool,
+                                       job.nn_buffer_index));
+    assert(tk_unl_mtx(privacy_result_mutex_id) == E_OK);
+    assert(tk_sig_sem(privacy_free_nn_buffer_sem_id, 1) == E_OK);
 
     uint32_t ts[3] = { 0 };
-
-#if DCMIPP_NN_NEEDS_CROP
-    /*
-     * Crop the image: the DCMIPP hardware requires output dimensions to be
-     * multiples of 16, so we crop the padded buffer into the NN input buffer.
-     */
-    SCB_InvalidateDCache_by_Addr(dcmipp_out_nn, sizeof(dcmipp_out_nn));
-    img_crop(dcmipp_out_nn, nn_in, pitch_nn, STAI_NETWORK_IN_1_WIDTH, STAI_NETWORK_IN_1_HEIGHT, STAI_NETWORK_IN_1_CHANNEL);
-    SCB_CleanInvalidateDCache_by_Addr(nn_in, nn_in_len);
-#endif
-
-    const uint32_t vision_started_cycles = capture_completed_cycles;
+    const uint32_t vision_started_cycles = PerformanceCounter_Now();
     ts[0] = vision_started_cycles;
-    if (frame_count == 0U)
+    if (job.frame_number == 1U)
     {
       Display_Status("OD: first inference running", UTIL_LCD_COLOR_GREEN);
       tm_putstring((UB *)"OD: first NN camera frame received; starting inference.\n");
     }
     /* run ATON inference */
-    g_app_diagnostic_frame = frame_count + 1U;
+    g_app_diagnostic_frame = job.frame_number;
     g_app_diagnostic_stage = APP_STAGE_NPU_INFERENCE;
     ret = stai_network_run(network_context, STAI_MODE_SYNC);
     assert(ret == 0);
@@ -364,9 +366,10 @@ void FaceDetection_Run(void)
     int32_t pp_ret = app_postprocess_run((void **) nn_out, number_output, &pp_output, &pp_params);
     assert(pp_ret == 0);
     ts[2] = PerformanceCounter_Now();
-    frame_count++;
-    PublishPrivacyResult(&pp_output, frame_count, working_index,
-                         capture_completed_cycles, capture_us,
+    privacy_inferred_frames++;
+    PublishPrivacyResult(&pp_output, job.frame_number, job.rgb_buffer_index,
+                         job.capture_completed_cycles, job.capture_us,
+                         capture_queue_wait_us, nn_copy_us,
                          PerformanceCounter_ToUs(ts[1] - ts[0]),
                          PerformanceCounter_ToUs(ts[2] - ts[1]),
                          PerformanceCounter_ToUs(ts[2] - vision_started_cycles));
@@ -681,11 +684,91 @@ static PrivacyRoi MakePrivacyRoi(const od_pp_outBuffer_t *detection)
   return roi;
 }
 
+static void CaptureTask(INT stacd, void *exinf)
+{
+  (void)stacd;
+  (void)exinf;
+  uint32_t frame_number = 0U;
+
+  while (1)
+  {
+    CameraPipeline_IspUpdate();
+    if (tk_wai_sem(privacy_free_buffer_sem_id, 1, TMO_POL) != E_OK)
+    {
+      privacy_capture_backpressure_skips++;
+      (void)tk_dly_tsk(1U);
+      continue;
+    }
+    if (tk_wai_sem(privacy_free_nn_buffer_sem_id, 1, TMO_POL) != E_OK)
+    {
+      assert(tk_sig_sem(privacy_free_buffer_sem_id, 1) == E_OK);
+      privacy_capture_backpressure_skips++;
+      (void)tk_dly_tsk(1U);
+      continue;
+    }
+
+    uint32_t rgb_buffer_index;
+    uint32_t nn_buffer_index;
+    assert(tk_loc_mtx(privacy_result_mutex_id, TMO_FEVR) == E_OK);
+    assert(PrivacyBufferPool_Acquire(&privacy_buffer_pool, &rgb_buffer_index));
+    assert(PrivacyNnBufferPool_Acquire(&privacy_nn_buffer_pool, &nn_buffer_index));
+    assert(tk_unl_mtx(privacy_result_mutex_id) == E_OK);
+
+    g_app_diagnostic_stage = APP_STAGE_CAMERA_CAPTURE;
+    const uint32_t capture_started_cycles = PerformanceCounter_Now();
+    CameraPipeline_DisplayPipe_Start(lcd_bg_buffer[rgb_buffer_index],
+                                     CMW_MODE_SNAPSHOT);
+    CameraPipeline_NNPipe_Start(nn_capture_buffer[nn_buffer_index],
+                                CMW_MODE_SNAPSHOT);
+
+    UINT frame_pattern;
+    const ER ercd = tk_wai_flg(camera_frame_flag_id,
+                               DISPLAY_FRAME_READY | NN_FRAME_READY,
+                               TWF_ANDW | TWF_BITCLR, &frame_pattern,
+                               CAMERA_FRAME_TIMEOUT_MS);
+    if (ercd == E_TMOUT)
+    {
+      tm_printf((UB *)"OD: ERROR: snapshot timeout (pipe1=%u pipe2=%u).\n",
+                camera_pipe_frames[DCMIPP_PIPE1],
+                camera_pipe_frames[DCMIPP_PIPE2]);
+      Display_Status("ERROR: camera timeout", UTIL_LCD_COLOR_RED);
+      while (1)
+      {
+        CameraPipeline_IspUpdate();
+        (void)tk_dly_tsk(100U);
+      }
+    }
+    assert(ercd == E_OK);
+
+    const uint32_t capture_completed_cycles = PerformanceCounter_Now();
+    PrivacyCaptureJob job = {
+      .frame_number = ++frame_number,
+      .rgb_buffer_index = rgb_buffer_index,
+      .nn_buffer_index = nn_buffer_index,
+      .capture_started_cycles = capture_started_cycles,
+      .capture_completed_cycles = capture_completed_cycles,
+      .capture_us = PerformanceCounter_ToUs(
+          capture_completed_cycles - capture_started_cycles),
+    };
+    assert(tk_loc_mtx(privacy_result_mutex_id, TMO_FEVR) == E_OK);
+    assert(PrivacyBufferPool_MarkCaptured(&privacy_buffer_pool,
+                                          rgb_buffer_index));
+    assert(PrivacyCaptureQueue_Push(&privacy_capture_queue, &job));
+    privacy_captured_frames++;
+    assert(tk_unl_mtx(privacy_result_mutex_id) == E_OK);
+    assert(tk_sig_sem(privacy_capture_sem_id, 1) == E_OK);
+    /* Let the inference task consume this job before capturing the next frame. */
+    (void)tk_dly_tsk(1U);
+  }
+}
+
 static void PublishPrivacyResult(od_pp_out_t *postprocess,
                                  uint32_t frame_number,
                                  uint32_t buffer_index,
                                  uint32_t deadline_started_cycles,
                                  uint32_t capture_us,
+                                 uint32_t capture_queue_wait_us,
+                                 uint32_t nn_copy_us,
                                  uint32_t inference_us,
                                  uint32_t postprocess_us,
                                  uint32_t vision_us)
@@ -697,6 +780,8 @@ static void PublishPrivacyResult(od_pp_out_t *postprocess,
     .deadline_started_cycles = deadline_started_cycles,
     .queued_at_cycles = PerformanceCounter_Now(),
     .capture_us = capture_us,
+    .capture_queue_wait_us = capture_queue_wait_us,
+    .nn_copy_us = nn_copy_us,
     .buffer_wait_us = privacy_buffer_wait_us[buffer_index],
     .inference_us = inference_us,
     .postprocess_us = postprocess_us,
@@ -820,6 +905,16 @@ static void PrivacyRenderTask(INT stacd, void *exinf)
         PerformanceCounter_DeadlineCycles());
 
     assert(tk_loc_mtx(privacy_display_mutex_id, TMO_FEVR) == E_OK);
+    if ((!privacy_warmup_complete) && (result.frame_number >= 101U))
+    {
+      privacy_published_frames = 0U;
+      privacy_dropped_deadline = 0U;
+      privacy_consecutive_drops = 0U;
+      privacy_maximum_consecutive_drops = 0U;
+      privacy_maximum_published_total_us = 0U;
+      privacy_capture_backpressure_skips = 0U;
+      privacy_warmup_complete = true;
+    }
     uint32_t ltdc_cycles = 0U;
     uint32_t vblank_cycles = 0U;
     const uint32_t old_display_index = privacy_buffer_pool.displayed_index;
@@ -832,6 +927,11 @@ static void PrivacyRenderTask(INT stacd, void *exinf)
       ltdc_cycles += PerformanceCounter_Now() - phase_started_cycles;
       result.state = PRIVACY_FRAME_DISPLAYED;
       privacy_published_frames++;
+      privacy_published_total_frames++;
+      if (result.total_us > privacy_maximum_published_total_us)
+      {
+        privacy_maximum_published_total_us = result.total_us;
+      }
       privacy_consecutive_drops = 0U;
     }
     else
@@ -915,8 +1015,9 @@ static void ControlMonitorTask(INT stacd, void *exinf)
   uint32_t last_switch_at = HAL_GetTick() - BUTTON_DEBOUNCE_MS;
   uint32_t last_log_at = HAL_GetTick();
   uint32_t previous_captured = privacy_captured_frames;
+  uint32_t previous_inferred = privacy_inferred_frames;
   uint32_t previous_processed = privacy_processed_frames;
-  uint32_t previous_published = privacy_published_frames;
+  uint32_t previous_published = privacy_published_total_frames;
 
   while (1)
   {
@@ -939,45 +1040,59 @@ static void ControlMonitorTask(INT stacd, void *exinf)
       bool result_valid;
       uint32_t queue_depth;
       uint32_t queue_maximum_depth;
+      uint32_t capture_queue_depth;
+      uint32_t capture_queue_maximum_depth;
       g_app_diagnostic_stage = APP_STAGE_MONITOR;
       assert(tk_loc_mtx(privacy_result_mutex_id, TMO_FEVR) == E_OK);
       result = privacy_completed_result;
       result_valid = privacy_completed_result_valid;
       queue_depth = PrivacyResultQueue_Depth(&privacy_result_queue);
       queue_maximum_depth = PrivacyResultQueue_MaximumDepth(&privacy_result_queue);
+      capture_queue_depth = PrivacyCaptureQueue_Depth(&privacy_capture_queue);
+      capture_queue_maximum_depth = PrivacyCaptureQueue_MaximumDepth(
+          &privacy_capture_queue);
       assert(tk_unl_mtx(privacy_result_mutex_id) == E_OK);
       if (result_valid)
       {
         const uint32_t elapsed_ms = now - last_log_at;
         const uint32_t captured = privacy_captured_frames;
+        const uint32_t inferred = privacy_inferred_frames;
         const uint32_t processed = privacy_processed_frames;
-        const uint32_t published = privacy_published_frames;
+        const uint32_t published = privacy_published_total_frames;
         const uint32_t captured_fps10 = ((captured - previous_captured) * 10000U) / elapsed_ms;
+        const uint32_t inferred_fps10 = ((inferred - previous_inferred) * 10000U) / elapsed_ms;
         const uint32_t processed_fps10 = ((processed - previous_processed) * 10000U) / elapsed_ms;
         const uint32_t published_fps10 = ((published - previous_published) * 10000U) / elapsed_ms;
-        tm_printf((UB *)"OD: frame=%u mode=%s detections=%u face=%u document=%u logo=%u capture=%uus ai=%uus pp=%uus "
+        tm_printf((UB *)"OD: frame=%u mode=%s detections=%u face=%u document=%u logo=%u capture=%uus capture_wait=%uus copy=%uus ai=%uus pp=%uus "
                          "vision=%uus inv=%uus filter=%uus clean=%uus render=%uus total=%uus "
                          "ltdc=%uus vblank=%uus buffer_wait=%uus infer_wait=%uus render_wait=%uus "
-                         "captured_fps=%u.%u processed_fps=%u.%u published_fps=%u.%u queue=%u/%u "
-                         "backpressure_skips=%u published=%u dropped=%u consecutive=%u max_consecutive=%u.\n",
+                         "captured_fps=%u.%u inferred_fps=%u.%u processed_fps=%u.%u published_fps=%u.%u "
+                         "capture_q=%u/%u render_q=%u/%u backpressure_skips=%u warmup=%s "
+                         "published=%u dropped=%u consecutive=%u max_consecutive=%u max_published_total=%uus.\n",
                   result.frame_number, PrivacyFilter_ModeName(result.applied_mode),
                   result.detection_count,
                   result.class_detection_count[PRIVACY_PROXY_FACE],
                   result.class_detection_count[PRIVACY_PROXY_DOCUMENT],
                   result.class_detection_count[PRIVACY_PROXY_LOGO],
-                  result.capture_us, result.inference_us,
+                  result.capture_us, result.capture_queue_wait_us,
+                  result.nn_copy_us, result.inference_us,
                   result.postprocess_us, result.vision_us,
                   result.cache_invalidate_us, result.filter_us, result.cache_clean_us,
                   result.render_us, result.total_us, result.ltdc_us, result.vblank_us,
                   result.buffer_wait_us, result.inference_wait_us, result.render_wait_us,
                   captured_fps10 / 10U, captured_fps10 % 10U,
+                  inferred_fps10 / 10U, inferred_fps10 % 10U,
                   processed_fps10 / 10U, processed_fps10 % 10U,
                   published_fps10 / 10U, published_fps10 % 10U,
+                  capture_queue_depth, capture_queue_maximum_depth,
                   queue_depth, queue_maximum_depth,
                   privacy_capture_backpressure_skips,
+                  privacy_warmup_complete ? "done" : "active",
                   result.published_frames, result.dropped_deadline,
-                  result.consecutive_drops, privacy_maximum_consecutive_drops);
+                  result.consecutive_drops, privacy_maximum_consecutive_drops,
+                  privacy_maximum_published_total_us);
         previous_captured = captured;
+        previous_inferred = inferred;
         previous_processed = processed;
         previous_published = published;
       }
@@ -996,8 +1111,18 @@ static void StartPrivacyTasks(void)
   };
   const T_CSEM free_buffer_sem = {
     .sematr = TA_TFIFO,
-    .isemcnt = 2,
-    .maxsem = 2,
+    .isemcnt = PRIVACY_BACKGROUND_BUFFER_COUNT - 1U,
+    .maxsem = PRIVACY_BACKGROUND_BUFFER_COUNT - 1U,
+  };
+  const T_CSEM free_nn_buffer_sem = {
+    .sematr = TA_TFIFO,
+    .isemcnt = PRIVACY_NN_BUFFER_COUNT,
+    .maxsem = PRIVACY_NN_BUFFER_COUNT,
+  };
+  const T_CSEM capture_sem = {
+    .sematr = TA_TFIFO,
+    .isemcnt = 0,
+    .maxsem = PRIVACY_CAPTURE_QUEUE_CAPACITY,
   };
   const T_CSEM result_sem = {
     .sematr = TA_TFIFO,
@@ -1005,24 +1130,33 @@ static void StartPrivacyTasks(void)
     .maxsem = PRIVACY_RESULT_QUEUE_CAPACITY,
   };
 
+  PrivacyCaptureQueue_Init(&privacy_capture_queue);
   PrivacyResultQueue_Init(&privacy_result_queue);
   PrivacyBufferPool_Init(&privacy_buffer_pool);
+  PrivacyNnBufferPool_Init(&privacy_nn_buffer_pool);
   privacy_result_mutex_id = tk_cre_mtx(&result_mutex);
   privacy_free_buffer_sem_id = tk_cre_sem(&free_buffer_sem);
+  privacy_free_nn_buffer_sem_id = tk_cre_sem(&free_nn_buffer_sem);
+  privacy_capture_sem_id = tk_cre_sem(&capture_sem);
   privacy_result_sem_id = tk_cre_sem(&result_sem);
   assert(privacy_result_mutex_id > 0);
   assert(privacy_free_buffer_sem_id > 0);
+  assert(privacy_free_nn_buffer_sem_id > 0);
+  assert(privacy_capture_sem_id > 0);
   assert(privacy_result_sem_id > 0);
   assert(BSP_PB_Init(BUTTON_USER1, BUTTON_MODE_GPIO) == BSP_ERROR_NONE);
 
   const ID render_task_id = tk_cre_tsk(&privacy_render_task_config);
   const ID control_task_id = tk_cre_tsk(&control_monitor_task_config);
+  const ID capture_task_id = tk_cre_tsk(&capture_task_config);
   assert(render_task_id > 0);
   assert(control_task_id > 0);
+  assert(capture_task_id > 0);
   assert(tk_sta_tsk(render_task_id, 0) == E_OK);
   assert(tk_sta_tsk(control_task_id, 0) == E_OK);
+  assert(tk_sta_tsk(capture_task_id, 0) == E_OK);
 
-  tm_putstring((UB *)"PRIVACY: three-buffer render pipeline started; default mode MASK.\n");
+  tm_putstring((UB *)"PRIVACY: capture/inference/render pipeline started; default mode MASK.\n");
 }
 
 static void LCD_init(void)
@@ -1081,21 +1215,6 @@ static uint32_t PerformanceCounter_DeadlineCycles(void)
   const uint32_t cycles_per_us = SystemCoreClock / 1000000U;
   assert(cycles_per_us != 0U);
   return cycles_per_us * PRIVACY_FRAME_DEADLINE_US;
-}
-
-static uint32_t AcquireFreeBackgroundBuffer(void)
-{
-  const uint32_t wait_started_cycles = PerformanceCounter_Now();
-  assert(tk_wai_sem(privacy_free_buffer_sem_id, 1, TMO_FEVR) == E_OK);
-  const uint32_t buffer_wait_us = PerformanceCounter_ToUs(
-      PerformanceCounter_Now() - wait_started_cycles);
-  assert(tk_loc_mtx(privacy_result_mutex_id, TMO_FEVR) == E_OK);
-  uint32_t buffer_index = PRIVACY_BACKGROUND_BUFFER_COUNT;
-  assert(PrivacyBufferPool_Acquire(&privacy_buffer_pool, &buffer_index));
-  privacy_buffer_wait_us[buffer_index] = buffer_wait_us;
-  assert(tk_unl_mtx(privacy_result_mutex_id) == E_OK);
-  assert(buffer_index < PRIVACY_BACKGROUND_BUFFER_COUNT);
-  return buffer_index;
 }
 
 static void WaitForLayerReload(uint32_t layer_index)

@@ -29,6 +29,8 @@ typedef enum
   PRIVACY_FRAME_FREE = 0,
   PRIVACY_FRAME_DISPLAYED,
   PRIVACY_FRAME_CAPTURING,
+  PRIVACY_FRAME_CAPTURED,
+  PRIVACY_FRAME_INFERENCE,
   PRIVACY_FRAME_PROCESSED,
   PRIVACY_FRAME_DROPPED,
 } PrivacyFrameState;
@@ -51,6 +53,8 @@ typedef struct
   uint32_t deadline_started_cycles;
   uint32_t queued_at_cycles;
   uint32_t capture_us;
+  uint32_t capture_queue_wait_us;
+  uint32_t nn_copy_us;
   uint32_t buffer_wait_us;
   uint32_t inference_wait_us;
   uint32_t render_wait_us;

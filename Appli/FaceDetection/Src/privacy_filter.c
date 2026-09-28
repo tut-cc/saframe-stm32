@@ -289,6 +289,55 @@ const char *PrivacyProxyClass_DisplayName(uint32_t class_index)
   return (class_index < PRIVACY_PROXY_CLASS_COUNT) ? names[class_index] : "INVALID";
 }
 
+void PrivacyCaptureQueue_Init(PrivacyCaptureQueue *queue)
+{
+  if (queue != NULL)
+  {
+    memset(queue, 0, sizeof(*queue));
+  }
+}
+
+bool PrivacyCaptureQueue_Push(PrivacyCaptureQueue *queue,
+                              const PrivacyCaptureJob *job)
+{
+  if ((queue == NULL) || (job == NULL) ||
+      (queue->count >= PRIVACY_CAPTURE_QUEUE_CAPACITY))
+  {
+    return false;
+  }
+  queue->entries[queue->write_index] = *job;
+  queue->write_index = (queue->write_index + 1U) % PRIVACY_CAPTURE_QUEUE_CAPACITY;
+  queue->count++;
+  if (queue->count > queue->maximum_depth)
+  {
+    queue->maximum_depth = queue->count;
+  }
+  return true;
+}
+
+bool PrivacyCaptureQueue_Pop(PrivacyCaptureQueue *queue,
+                             PrivacyCaptureJob *job)
+{
+  if ((queue == NULL) || (job == NULL) || (queue->count == 0U))
+  {
+    return false;
+  }
+  *job = queue->entries[queue->read_index];
+  queue->read_index = (queue->read_index + 1U) % PRIVACY_CAPTURE_QUEUE_CAPACITY;
+  queue->count--;
+  return true;
+}
+
+uint32_t PrivacyCaptureQueue_Depth(const PrivacyCaptureQueue *queue)
+{
+  return (queue != NULL) ? queue->count : 0U;
+}
+
+uint32_t PrivacyCaptureQueue_MaximumDepth(const PrivacyCaptureQueue *queue)
+{
+  return (queue != NULL) ? queue->maximum_depth : 0U;
+}
+
 void PrivacyResultQueue_Init(PrivacyResultQueue *queue)
 {
   if (queue != NULL)
@@ -370,10 +419,32 @@ bool PrivacyBufferPool_Acquire(PrivacyBufferPool *pool, uint32_t *buffer_index)
   return false;
 }
 
-bool PrivacyBufferPool_MarkProcessed(PrivacyBufferPool *pool, uint32_t buffer_index)
+bool PrivacyBufferPool_MarkCaptured(PrivacyBufferPool *pool, uint32_t buffer_index)
 {
   if ((pool == NULL) || (buffer_index >= PRIVACY_BACKGROUND_BUFFER_COUNT) ||
       (pool->states[buffer_index] != PRIVACY_FRAME_CAPTURING))
+  {
+    return false;
+  }
+  pool->states[buffer_index] = PRIVACY_FRAME_CAPTURED;
+  return true;
+}
+
+bool PrivacyBufferPool_MarkInference(PrivacyBufferPool *pool, uint32_t buffer_index)
+{
+  if ((pool == NULL) || (buffer_index >= PRIVACY_BACKGROUND_BUFFER_COUNT) ||
+      (pool->states[buffer_index] != PRIVACY_FRAME_CAPTURED))
+  {
+    return false;
+  }
+  pool->states[buffer_index] = PRIVACY_FRAME_INFERENCE;
+  return true;
+}
+
+bool PrivacyBufferPool_MarkProcessed(PrivacyBufferPool *pool, uint32_t buffer_index)
+{
+  if ((pool == NULL) || (buffer_index >= PRIVACY_BACKGROUND_BUFFER_COUNT) ||
+      (pool->states[buffer_index] != PRIVACY_FRAME_INFERENCE))
   {
     return false;
   }
@@ -418,4 +489,55 @@ PrivacyFrameState PrivacyBufferPool_State(const PrivacyBufferPool *pool,
     return PRIVACY_FRAME_DROPPED;
   }
   return pool->states[buffer_index];
+}
+
+void PrivacyNnBufferPool_Init(PrivacyNnBufferPool *pool)
+{
+  if (pool != NULL)
+  {
+    for (uint32_t i = 0U; i < PRIVACY_NN_BUFFER_COUNT; i++)
+    {
+      pool->states[i] = PRIVACY_NN_BUFFER_FREE;
+    }
+  }
+}
+
+bool PrivacyNnBufferPool_Acquire(PrivacyNnBufferPool *pool, uint32_t *buffer_index)
+{
+  if ((pool == NULL) || (buffer_index == NULL))
+  {
+    return false;
+  }
+  for (uint32_t i = 0U; i < PRIVACY_NN_BUFFER_COUNT; i++)
+  {
+    if (pool->states[i] == PRIVACY_NN_BUFFER_FREE)
+    {
+      pool->states[i] = PRIVACY_NN_BUFFER_CAPTURING;
+      *buffer_index = i;
+      return true;
+    }
+  }
+  return false;
+}
+
+bool PrivacyNnBufferPool_MarkCopying(PrivacyNnBufferPool *pool, uint32_t buffer_index)
+{
+  if ((pool == NULL) || (buffer_index >= PRIVACY_NN_BUFFER_COUNT) ||
+      (pool->states[buffer_index] != PRIVACY_NN_BUFFER_CAPTURING))
+  {
+    return false;
+  }
+  pool->states[buffer_index] = PRIVACY_NN_BUFFER_COPYING;
+  return true;
+}
+
+bool PrivacyNnBufferPool_Release(PrivacyNnBufferPool *pool, uint32_t buffer_index)
+{
+  if ((pool == NULL) || (buffer_index >= PRIVACY_NN_BUFFER_COUNT) ||
+      (pool->states[buffer_index] != PRIVACY_NN_BUFFER_COPYING))
+  {
+    return false;
+  }
+  pool->states[buffer_index] = PRIVACY_NN_BUFFER_FREE;
+  return true;
 }

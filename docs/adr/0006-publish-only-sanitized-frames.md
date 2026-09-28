@@ -37,11 +37,13 @@ MASKまたはMOSAIC処理が完了したフレームだけをLTDCへ公開する
 
 ## Consequences
 
-- フレーム状態は`FREE → CAPTURING → PROCESSED → DISPLAYED`または
-  `FREE → CAPTURING → PROCESSED → DROPPED → FREE`だけを許可する。
-- RGB565背景は3面とし、VisionタスクとRenderタスクの間を固定長FIFOで接続する。
-  各バッファは所有状態とSemaphoreで管理し、公開時はLTDCのVBlankリロード完了後に
-  旧表示バッファだけを`FREE`へ戻す。
+- フレーム状態は`FREE → CAPTURING → CAPTURED → INFERENCE → PROCESSED → DISPLAYED`
+  または`FREE → CAPTURING → CAPTURED → INFERENCE → PROCESSED → DROPPED → FREE`
+  だけを許可する。
+- RGB565背景は4面とし、Capture、Inference、Renderの3段を固定長FIFOで接続する。
+  DCMIPP用NN入力はPSRAM上の2面ステージングへ取得し、Inference段が生成モデル内の
+  固定入力へコピーする。各バッファは所有状態とSemaphoreで管理し、公開時はLTDCの
+  VBlankリロード完了後に旧表示バッファだけを`FREE`へ戻す。
 - 背景と状態表示前景は同じLTDCグローバルVBlankリロードで同時に反映し、フレーム
   ごとのVBlank待ちは1回にする。
 - センサー起動直後はPipe 1だけで非公開バッファへ1枚snapshot取得して破棄し、カメラ
@@ -50,8 +52,7 @@ MASKまたはMOSAIC処理が完了したフレームだけをLTDCへ公開する
   ブロック平均を計算する。ARGB4444前景レイヤは状態表示専用とする。
 - カメラタイムアウト時は最後の安全化済みフレームを保持し、前景レイヤにエラーを表示
   する。
-- RGB565背景バッファが3面必要になり、単一バッファ構成に対するPSRAM使用量は
-  1,536,000 byte増える。
+- RGB565背景4面とNNステージング2面が必要になり、PSRAMを約4.25 MiB使用する。
 - 現在の対象はSTM32N6570-DKのLCD 800×480のみ。HD 1280×720、letterbox、USB
   UVC、独自クラスモデルは後続マイルストーンとする。
 
