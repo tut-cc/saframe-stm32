@@ -1,4 +1,5 @@
 #include "privacy_filter.h"
+#include "privacy_pipeline_queue.h"
 
 #include <stddef.h>
 #include <string.h>
@@ -286,4 +287,135 @@ const char *PrivacyProxyClass_DisplayName(uint32_t class_index)
     "FACE", "DOCUMENT", "LOGO"
   };
   return (class_index < PRIVACY_PROXY_CLASS_COUNT) ? names[class_index] : "INVALID";
+}
+
+void PrivacyResultQueue_Init(PrivacyResultQueue *queue)
+{
+  if (queue != NULL)
+  {
+    memset(queue, 0, sizeof(*queue));
+  }
+}
+
+bool PrivacyResultQueue_Push(PrivacyResultQueue *queue,
+                             const PrivacyFrameResult *result)
+{
+  if ((queue == NULL) || (result == NULL) ||
+      (queue->count >= PRIVACY_RESULT_QUEUE_CAPACITY))
+  {
+    return false;
+  }
+  queue->entries[queue->write_index] = *result;
+  queue->write_index = (queue->write_index + 1U) % PRIVACY_RESULT_QUEUE_CAPACITY;
+  queue->count++;
+  if (queue->count > queue->maximum_depth)
+  {
+    queue->maximum_depth = queue->count;
+  }
+  return true;
+}
+
+bool PrivacyResultQueue_Pop(PrivacyResultQueue *queue,
+                            PrivacyFrameResult *result)
+{
+  if ((queue == NULL) || (result == NULL) || (queue->count == 0U))
+  {
+    return false;
+  }
+  *result = queue->entries[queue->read_index];
+  queue->read_index = (queue->read_index + 1U) % PRIVACY_RESULT_QUEUE_CAPACITY;
+  queue->count--;
+  return true;
+}
+
+uint32_t PrivacyResultQueue_Depth(const PrivacyResultQueue *queue)
+{
+  return (queue != NULL) ? queue->count : 0U;
+}
+
+uint32_t PrivacyResultQueue_MaximumDepth(const PrivacyResultQueue *queue)
+{
+  return (queue != NULL) ? queue->maximum_depth : 0U;
+}
+
+void PrivacyBufferPool_Init(PrivacyBufferPool *pool)
+{
+  if (pool == NULL)
+  {
+    return;
+  }
+  for (uint32_t i = 0U; i < PRIVACY_BACKGROUND_BUFFER_COUNT; i++)
+  {
+    pool->states[i] = PRIVACY_FRAME_FREE;
+  }
+  pool->displayed_index = 0U;
+  pool->states[pool->displayed_index] = PRIVACY_FRAME_DISPLAYED;
+}
+
+bool PrivacyBufferPool_Acquire(PrivacyBufferPool *pool, uint32_t *buffer_index)
+{
+  if ((pool == NULL) || (buffer_index == NULL))
+  {
+    return false;
+  }
+  for (uint32_t i = 0U; i < PRIVACY_BACKGROUND_BUFFER_COUNT; i++)
+  {
+    if (pool->states[i] == PRIVACY_FRAME_FREE)
+    {
+      pool->states[i] = PRIVACY_FRAME_CAPTURING;
+      *buffer_index = i;
+      return true;
+    }
+  }
+  return false;
+}
+
+bool PrivacyBufferPool_MarkProcessed(PrivacyBufferPool *pool, uint32_t buffer_index)
+{
+  if ((pool == NULL) || (buffer_index >= PRIVACY_BACKGROUND_BUFFER_COUNT) ||
+      (pool->states[buffer_index] != PRIVACY_FRAME_CAPTURING))
+  {
+    return false;
+  }
+  pool->states[buffer_index] = PRIVACY_FRAME_PROCESSED;
+  return true;
+}
+
+bool PrivacyBufferPool_Publish(PrivacyBufferPool *pool, uint32_t buffer_index,
+                               uint32_t *released_index)
+{
+  if ((pool == NULL) || (released_index == NULL) ||
+      (buffer_index >= PRIVACY_BACKGROUND_BUFFER_COUNT) ||
+      (pool->states[buffer_index] != PRIVACY_FRAME_PROCESSED) ||
+      (pool->states[pool->displayed_index] != PRIVACY_FRAME_DISPLAYED))
+  {
+    return false;
+  }
+  *released_index = pool->displayed_index;
+  pool->states[*released_index] = PRIVACY_FRAME_FREE;
+  pool->states[buffer_index] = PRIVACY_FRAME_DISPLAYED;
+  pool->displayed_index = buffer_index;
+  return true;
+}
+
+bool PrivacyBufferPool_Drop(PrivacyBufferPool *pool, uint32_t buffer_index)
+{
+  if ((pool == NULL) || (buffer_index >= PRIVACY_BACKGROUND_BUFFER_COUNT) ||
+      (pool->states[buffer_index] != PRIVACY_FRAME_PROCESSED))
+  {
+    return false;
+  }
+  pool->states[buffer_index] = PRIVACY_FRAME_DROPPED;
+  pool->states[buffer_index] = PRIVACY_FRAME_FREE;
+  return true;
+}
+
+PrivacyFrameState PrivacyBufferPool_State(const PrivacyBufferPool *pool,
+                                          uint32_t buffer_index)
+{
+  if ((pool == NULL) || (buffer_index >= PRIVACY_BACKGROUND_BUFFER_COUNT))
+  {
+    return PRIVACY_FRAME_DROPPED;
+  }
+  return pool->states[buffer_index];
 }

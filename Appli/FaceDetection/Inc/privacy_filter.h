@@ -26,9 +26,10 @@ typedef enum
 
 typedef enum
 {
-  PRIVACY_FRAME_WORKING = 0,
+  PRIVACY_FRAME_FREE = 0,
+  PRIVACY_FRAME_DISPLAYED,
+  PRIVACY_FRAME_CAPTURING,
   PRIVACY_FRAME_PROCESSED,
-  PRIVACY_FRAME_PUBLISHED,
   PRIVACY_FRAME_DROPPED,
 } PrivacyFrameState;
 
@@ -48,7 +49,11 @@ typedef struct
   PrivacyFrameState state;
   PrivacyMode applied_mode;
   uint32_t deadline_started_cycles;
+  uint32_t queued_at_cycles;
   uint32_t capture_us;
+  uint32_t buffer_wait_us;
+  uint32_t inference_wait_us;
+  uint32_t render_wait_us;
   uint32_t inference_us;
   uint32_t postprocess_us;
   uint32_t vision_us;

@@ -37,6 +37,7 @@
 #include "app_config.h"
 #include "crop_img.h"
 #include "privacy_filter.h"
+#include "privacy_pipeline_queue.h"
 #include "face_detection_diagnostics.h"
 #include "model_signature.h"
 
@@ -51,8 +52,6 @@
 
 #define NETWORK_WEIGHTS_ADDRESS  (0x70380000UL)
 #define CAMERA_FRAME_TIMEOUT_MS  (3000U)
-#define PRIVACY_RESULT_READY     (1U << 0)
-#define PRIVACY_BUFFER_RELEASED  (1U << 1)
 #define PRIVACY_FRAME_DEADLINE_US (33000U)
 #define PRIVACY_ROI_MARGIN_PC    (15U)
 #define CONTROL_PERIOD_MS        (20U)
@@ -130,30 +129,30 @@ STAI_NETWORK_CONTEXT_DECLARE(network_context, STAI_NETWORK_CONTEXT_SIZE)
 /* Lcd Background Buffer */
 __attribute__ ((section (".psram_bss")))
 __attribute__ ((aligned (32)))
-static uint8_t lcd_bg_buffer[2][LCD_BG_FRAMEBUFFER_SIZE];
-static volatile uint32_t lcd_bg_display_idx;
-static volatile uint32_t lcd_bg_working_idx = 1U;
-static volatile PrivacyFrameState privacy_frame_state[2] = {
-  PRIVACY_FRAME_PUBLISHED,
-  PRIVACY_FRAME_WORKING,
-};
+static uint8_t lcd_bg_buffer[3][LCD_BG_FRAMEBUFFER_SIZE];
+static PrivacyBufferPool privacy_buffer_pool;
 /* Lcd Foreground Buffer */
 __attribute__ ((section (".psram_bss")))
 __attribute__ ((aligned (32)))
 static uint8_t lcd_fg_buffer[2][LCD_FG_WIDTH * LCD_FG_HEIGHT * 2];
 static int lcd_fg_buffer_rd_idx;
 
-static ID privacy_result_flag_id;
 static ID privacy_result_mutex_id;
 static ID privacy_display_mutex_id;
-static PrivacyFrameResult privacy_results[2];
-static uint32_t privacy_published_index;
+static ID privacy_free_buffer_sem_id;
+static ID privacy_result_sem_id;
+static PrivacyResultQueue privacy_result_queue;
 static PrivacyFrameResult privacy_completed_result;
 static bool privacy_completed_result_valid;
 static volatile PrivacyMode privacy_mode = PRIVACY_MODE_MASK;
 static volatile uint32_t privacy_published_frames;
+static volatile uint32_t privacy_captured_frames;
+static volatile uint32_t privacy_processed_frames;
 static volatile uint32_t privacy_dropped_deadline;
 static volatile uint32_t privacy_consecutive_drops;
+static volatile uint32_t privacy_maximum_consecutive_drops;
+static volatile uint32_t privacy_capture_backpressure_skips;
+static uint32_t privacy_buffer_wait_us[3];
 static volatile uint32_t camera_pipe_frames[3];
 
 static void SystemClock_Config(void);
@@ -162,6 +161,7 @@ static void NPUCache_config(void);
 static void Display_Status(const char *message, uint32_t color);
 static void LCD_init(void);
 static void WaitForLayerReload(uint32_t layer_index);
+static void WaitForReload(void);
 static void Security_Config(void);
 static void set_clk_sleep_mode(void);
 static void IAC_Config(void);
@@ -172,6 +172,7 @@ static void PerformanceCounter_Init(void);
 static uint32_t PerformanceCounter_Now(void);
 static uint32_t PerformanceCounter_ToUs(uint32_t cycles);
 static uint32_t PerformanceCounter_DeadlineCycles(void);
+static uint32_t AcquireFreeBackgroundBuffer(void);
 static void PublishPrivacyResult(od_pp_out_t *postprocess,
                                  uint32_t frame_number,
                                  uint32_t buffer_index,
@@ -299,10 +300,7 @@ void FaceDetection_Run(void)
     g_app_diagnostic_stage = APP_STAGE_CAMERA_CAPTURE;
     CameraPipeline_IspUpdate();
 
-    const uint32_t working_index = lcd_bg_working_idx;
-    assert((privacy_frame_state[working_index] == PRIVACY_FRAME_WORKING) ||
-           (privacy_frame_state[working_index] == PRIVACY_FRAME_DROPPED));
-    privacy_frame_state[working_index] = PRIVACY_FRAME_WORKING;
+    const uint32_t working_index = AcquireFreeBackgroundBuffer();
     const uint32_t capture_started_cycles = PerformanceCounter_Now();
     CameraPipeline_DisplayPipe_Start(lcd_bg_buffer[working_index], CMW_MODE_SNAPSHOT);
 
@@ -332,6 +330,7 @@ void FaceDetection_Run(void)
     assert(ercd == E_OK);
 
     const uint32_t capture_completed_cycles = PerformanceCounter_Now();
+    privacy_captured_frames++;
     const uint32_t capture_us = PerformanceCounter_ToUs(
         capture_completed_cycles - capture_started_cycles);
 
@@ -365,8 +364,6 @@ void FaceDetection_Run(void)
     int32_t pp_ret = app_postprocess_run((void **) nn_out, number_output, &pp_output, &pp_params);
     assert(pp_ret == 0);
     ts[2] = PerformanceCounter_Now();
-    privacy_frame_state[working_index] = PRIVACY_FRAME_PROCESSED;
-
     frame_count++;
     PublishPrivacyResult(&pp_output, frame_count, working_index,
                          capture_completed_cycles, capture_us,
@@ -380,9 +377,6 @@ void FaceDetection_Run(void)
       SCB_InvalidateDCache_by_Addr(tmp, nn_out_len[i]);
     }
 
-    UINT release_pattern;
-    assert(tk_wai_flg(privacy_result_flag_id, PRIVACY_BUFFER_RELEASED,
-                      TWF_ORW | TWF_BITCLR, &release_pattern, TMO_FEVR) == E_OK);
   }
 }
 
@@ -448,7 +442,7 @@ void FaceDetection_CameraFrameCallback(uint32_t pipe)
 static bool PrimeCamera(void)
 {
   UINT frame_pattern = 0U;
-  CameraPipeline_DisplayPipe_Start(lcd_bg_buffer[lcd_bg_working_idx], CMW_MODE_SNAPSHOT);
+  CameraPipeline_DisplayPipe_Start(lcd_bg_buffer[1], CMW_MODE_SNAPSHOT);
   const ER ercd = tk_wai_flg(camera_frame_flag_id, DISPLAY_FRAME_READY,
                              TWF_ORW | TWF_BITCLR, &frame_pattern,
                              CAMERA_FRAME_TIMEOUT_MS);
@@ -701,7 +695,9 @@ static void PublishPrivacyResult(od_pp_out_t *postprocess,
     .buffer_index = buffer_index,
     .state = PRIVACY_FRAME_PROCESSED,
     .deadline_started_cycles = deadline_started_cycles,
+    .queued_at_cycles = PerformanceCounter_Now(),
     .capture_us = capture_us,
+    .buffer_wait_us = privacy_buffer_wait_us[buffer_index],
     .inference_us = inference_us,
     .postprocess_us = postprocess_us,
     .vision_us = vision_us,
@@ -729,11 +725,11 @@ static void PublishPrivacyResult(od_pp_out_t *postprocess,
   }
 
   assert(tk_loc_mtx(privacy_result_mutex_id, TMO_FEVR) == E_OK);
-  const uint32_t next_index = 1U - privacy_published_index;
-  privacy_results[next_index] = result;
-  privacy_published_index = next_index;
+  assert(PrivacyBufferPool_MarkProcessed(&privacy_buffer_pool, buffer_index));
+  assert(PrivacyResultQueue_Push(&privacy_result_queue, &result));
+  privacy_processed_frames++;
   assert(tk_unl_mtx(privacy_result_mutex_id) == E_OK);
-  assert(tk_set_flg(privacy_result_flag_id, PRIVACY_RESULT_READY) == E_OK);
+  assert(tk_sig_sem(privacy_result_sem_id, 1) == E_OK);
 }
 
 static void Display_Status(const char *message, uint32_t color)
@@ -772,20 +768,21 @@ static void PrivacyRenderTask(INT stacd, void *exinf)
 
   while (1)
   {
-    UINT pattern;
-    assert(tk_wai_flg(privacy_result_flag_id, PRIVACY_RESULT_READY,
-                      TWF_ORW | TWF_BITCLR, &pattern, TMO_FEVR) == E_OK);
+    assert(tk_wai_sem(privacy_result_sem_id, 1, TMO_FEVR) == E_OK);
 
     PrivacyFrameResult result;
     assert(tk_loc_mtx(privacy_result_mutex_id, TMO_FEVR) == E_OK);
-    result = privacy_results[privacy_published_index];
+    assert(PrivacyResultQueue_Pop(&privacy_result_queue, &result));
+    assert(PrivacyBufferPool_State(&privacy_buffer_pool, result.buffer_index) ==
+           PRIVACY_FRAME_PROCESSED);
     assert(tk_unl_mtx(privacy_result_mutex_id) == E_OK);
+    result.render_wait_us = PerformanceCounter_ToUs(
+        PerformanceCounter_Now() - result.queued_at_cycles);
 
     const uint32_t render_started_cycles = PerformanceCounter_Now();
     const PrivacyMode mode = privacy_mode;
     result.applied_mode = mode;
     assert(result.state == PRIVACY_FRAME_PROCESSED);
-    assert(privacy_frame_state[result.buffer_index] == PRIVACY_FRAME_PROCESSED);
     uint8_t *working_buffer = lcd_bg_buffer[result.buffer_index];
     const uint32_t active_frame_size = lcd_bg_area.XSize * lcd_bg_area.YSize * 2U;
 
@@ -825,35 +822,27 @@ static void PrivacyRenderTask(INT stacd, void *exinf)
     assert(tk_loc_mtx(privacy_display_mutex_id, TMO_FEVR) == E_OK);
     uint32_t ltdc_cycles = 0U;
     uint32_t vblank_cycles = 0U;
+    const uint32_t old_display_index = privacy_buffer_pool.displayed_index;
     if (publish)
     {
-      const uint32_t old_display_index = lcd_bg_display_idx;
       g_app_diagnostic_stage = APP_STAGE_LTDC_RELOAD;
       phase_started_cycles = PerformanceCounter_Now();
       assert(HAL_LTDC_SetAddress_NoReload(
           &hlcd_ltdc, (uint32_t)working_buffer, LTDC_LAYER_1) == HAL_OK);
-      assert(HAL_LTDC_ReloadLayer(&hlcd_ltdc, LTDC_RELOAD_VERTICAL_BLANKING,
-                                  LTDC_LAYER_1) == HAL_OK);
       ltdc_cycles += PerformanceCounter_Now() - phase_started_cycles;
-      g_app_diagnostic_stage = APP_STAGE_VBLANK_WAIT;
-      phase_started_cycles = PerformanceCounter_Now();
-      WaitForLayerReload(LTDC_LAYER_1);
-      vblank_cycles += PerformanceCounter_Now() - phase_started_cycles;
-      lcd_bg_display_idx = result.buffer_index;
-      lcd_bg_working_idx = old_display_index;
-      privacy_frame_state[result.buffer_index] = PRIVACY_FRAME_PUBLISHED;
-      privacy_frame_state[old_display_index] = PRIVACY_FRAME_WORKING;
-      result.state = PRIVACY_FRAME_PUBLISHED;
+      result.state = PRIVACY_FRAME_DISPLAYED;
       privacy_published_frames++;
       privacy_consecutive_drops = 0U;
     }
     else
     {
-      lcd_bg_working_idx = result.buffer_index;
-      privacy_frame_state[result.buffer_index] = PRIVACY_FRAME_DROPPED;
       result.state = PRIVACY_FRAME_DROPPED;
       privacy_dropped_deadline++;
       privacy_consecutive_drops++;
+      if (privacy_consecutive_drops > privacy_maximum_consecutive_drops)
+      {
+        privacy_maximum_consecutive_drops = privacy_consecutive_drops;
+      }
     }
 
     PrivacyRenderTarget overlay_target = {
@@ -884,12 +873,11 @@ static void PrivacyRenderTask(INT stacd, void *exinf)
     SCB_CleanDCache_by_Addr(lcd_fg_buffer[lcd_fg_buffer_rd_idx],
                             LCD_FG_FRAMEBUFFER_SIZE);
     phase_started_cycles = PerformanceCounter_Now();
-    assert(HAL_LTDC_ReloadLayer(&hlcd_ltdc, LTDC_RELOAD_VERTICAL_BLANKING,
-                                LTDC_LAYER_2) == HAL_OK);
+    assert(HAL_LTDC_Reload(&hlcd_ltdc, LTDC_RELOAD_VERTICAL_BLANKING) == HAL_OK);
     ltdc_cycles += PerformanceCounter_Now() - phase_started_cycles;
     g_app_diagnostic_stage = APP_STAGE_VBLANK_WAIT;
     phase_started_cycles = PerformanceCounter_Now();
-    WaitForLayerReload(LTDC_LAYER_2);
+    WaitForReload();
     vblank_cycles += PerformanceCounter_Now() - phase_started_cycles;
     lcd_fg_buffer_rd_idx = 1 - lcd_fg_buffer_rd_idx;
     result.ltdc_us = PerformanceCounter_ToUs(ltdc_cycles);
@@ -900,11 +888,21 @@ static void PrivacyRenderTask(INT stacd, void *exinf)
     assert(tk_unl_mtx(privacy_display_mutex_id) == E_OK);
 
     assert(tk_loc_mtx(privacy_result_mutex_id, TMO_FEVR) == E_OK);
-    privacy_results[privacy_published_index] = result;
+    if (publish)
+    {
+      uint32_t released_index;
+      assert(PrivacyBufferPool_Publish(&privacy_buffer_pool,
+                                       result.buffer_index, &released_index));
+      assert(released_index == old_display_index);
+    }
+    else
+    {
+      assert(PrivacyBufferPool_Drop(&privacy_buffer_pool, result.buffer_index));
+    }
     privacy_completed_result = result;
     privacy_completed_result_valid = true;
     assert(tk_unl_mtx(privacy_result_mutex_id) == E_OK);
-    assert(tk_set_flg(privacy_result_flag_id, PRIVACY_BUFFER_RELEASED) == E_OK);
+    assert(tk_sig_sem(privacy_free_buffer_sem_id, 1) == E_OK);
   }
 }
 
@@ -916,6 +914,9 @@ static void ControlMonitorTask(INT stacd, void *exinf)
   uint32_t previous_button = 0U;
   uint32_t last_switch_at = HAL_GetTick() - BUTTON_DEBOUNCE_MS;
   uint32_t last_log_at = HAL_GetTick();
+  uint32_t previous_captured = privacy_captured_frames;
+  uint32_t previous_processed = privacy_processed_frames;
+  uint32_t previous_published = privacy_published_frames;
 
   while (1)
   {
@@ -936,16 +937,29 @@ static void ControlMonitorTask(INT stacd, void *exinf)
     {
       PrivacyFrameResult result;
       bool result_valid;
+      uint32_t queue_depth;
+      uint32_t queue_maximum_depth;
       g_app_diagnostic_stage = APP_STAGE_MONITOR;
       assert(tk_loc_mtx(privacy_result_mutex_id, TMO_FEVR) == E_OK);
       result = privacy_completed_result;
       result_valid = privacy_completed_result_valid;
+      queue_depth = PrivacyResultQueue_Depth(&privacy_result_queue);
+      queue_maximum_depth = PrivacyResultQueue_MaximumDepth(&privacy_result_queue);
       assert(tk_unl_mtx(privacy_result_mutex_id) == E_OK);
       if (result_valid)
       {
+        const uint32_t elapsed_ms = now - last_log_at;
+        const uint32_t captured = privacy_captured_frames;
+        const uint32_t processed = privacy_processed_frames;
+        const uint32_t published = privacy_published_frames;
+        const uint32_t captured_fps10 = ((captured - previous_captured) * 10000U) / elapsed_ms;
+        const uint32_t processed_fps10 = ((processed - previous_processed) * 10000U) / elapsed_ms;
+        const uint32_t published_fps10 = ((published - previous_published) * 10000U) / elapsed_ms;
         tm_printf((UB *)"OD: frame=%u mode=%s detections=%u face=%u document=%u logo=%u capture=%uus ai=%uus pp=%uus "
                          "vision=%uus inv=%uus filter=%uus clean=%uus render=%uus total=%uus "
-                         "ltdc=%uus vblank=%uus published=%u dropped=%u consecutive=%u.\n",
+                         "ltdc=%uus vblank=%uus buffer_wait=%uus infer_wait=%uus render_wait=%uus "
+                         "captured_fps=%u.%u processed_fps=%u.%u published_fps=%u.%u queue=%u/%u "
+                         "backpressure_skips=%u published=%u dropped=%u consecutive=%u max_consecutive=%u.\n",
                   result.frame_number, PrivacyFilter_ModeName(result.applied_mode),
                   result.detection_count,
                   result.class_detection_count[PRIVACY_PROXY_FACE],
@@ -955,8 +969,17 @@ static void ControlMonitorTask(INT stacd, void *exinf)
                   result.postprocess_us, result.vision_us,
                   result.cache_invalidate_us, result.filter_us, result.cache_clean_us,
                   result.render_us, result.total_us, result.ltdc_us, result.vblank_us,
+                  result.buffer_wait_us, result.inference_wait_us, result.render_wait_us,
+                  captured_fps10 / 10U, captured_fps10 % 10U,
+                  processed_fps10 / 10U, processed_fps10 % 10U,
+                  published_fps10 / 10U, published_fps10 % 10U,
+                  queue_depth, queue_maximum_depth,
+                  privacy_capture_backpressure_skips,
                   result.published_frames, result.dropped_deadline,
-                  result.consecutive_drops);
+                  result.consecutive_drops, privacy_maximum_consecutive_drops);
+        previous_captured = captured;
+        previous_processed = processed;
+        previous_published = published;
       }
       last_log_at = now;
     }
@@ -967,19 +990,29 @@ static void ControlMonitorTask(INT stacd, void *exinf)
 
 static void StartPrivacyTasks(void)
 {
-  const T_CFLG result_flag = {
-    .flgatr = TA_TFIFO | TA_WMUL,
-    .iflgptn = 0,
-  };
   const T_CMTX result_mutex = {
     .mtxatr = TA_INHERIT,
     .ceilpri = 0,
   };
+  const T_CSEM free_buffer_sem = {
+    .sematr = TA_TFIFO,
+    .isemcnt = 2,
+    .maxsem = 2,
+  };
+  const T_CSEM result_sem = {
+    .sematr = TA_TFIFO,
+    .isemcnt = 0,
+    .maxsem = PRIVACY_RESULT_QUEUE_CAPACITY,
+  };
 
-  privacy_result_flag_id = tk_cre_flg(&result_flag);
+  PrivacyResultQueue_Init(&privacy_result_queue);
+  PrivacyBufferPool_Init(&privacy_buffer_pool);
   privacy_result_mutex_id = tk_cre_mtx(&result_mutex);
-  assert(privacy_result_flag_id > 0);
+  privacy_free_buffer_sem_id = tk_cre_sem(&free_buffer_sem);
+  privacy_result_sem_id = tk_cre_sem(&result_sem);
   assert(privacy_result_mutex_id > 0);
+  assert(privacy_free_buffer_sem_id > 0);
+  assert(privacy_result_sem_id > 0);
   assert(BSP_PB_Init(BUTTON_USER1, BUTTON_MODE_GPIO) == BSP_ERROR_NONE);
 
   const ID render_task_id = tk_cre_tsk(&privacy_render_task_config);
@@ -989,7 +1022,7 @@ static void StartPrivacyTasks(void)
   assert(tk_sta_tsk(render_task_id, 0) == E_OK);
   assert(tk_sta_tsk(control_task_id, 0) == E_OK);
 
-  tm_putstring((UB *)"PRIVACY: render and control tasks started; default mode MASK.\n");
+  tm_putstring((UB *)"PRIVACY: three-buffer render pipeline started; default mode MASK.\n");
 }
 
 static void LCD_init(void)
@@ -1004,7 +1037,7 @@ static void LCD_init(void)
   LayerConfig.X1          = lcd_bg_area.X0 + lcd_bg_area.XSize;
   LayerConfig.Y1          = lcd_bg_area.Y0 + lcd_bg_area.YSize;
   LayerConfig.PixelFormat = LCD_PIXEL_FORMAT_RGB565;
-  LayerConfig.Address     = (uint32_t) lcd_bg_buffer[lcd_bg_display_idx];
+  LayerConfig.Address     = (uint32_t) lcd_bg_buffer[0];
 
   BSP_LCD_ConfigLayer(0, LTDC_LAYER_1, &LayerConfig);
 
@@ -1050,10 +1083,35 @@ static uint32_t PerformanceCounter_DeadlineCycles(void)
   return cycles_per_us * PRIVACY_FRAME_DEADLINE_US;
 }
 
+static uint32_t AcquireFreeBackgroundBuffer(void)
+{
+  const uint32_t wait_started_cycles = PerformanceCounter_Now();
+  assert(tk_wai_sem(privacy_free_buffer_sem_id, 1, TMO_FEVR) == E_OK);
+  const uint32_t buffer_wait_us = PerformanceCounter_ToUs(
+      PerformanceCounter_Now() - wait_started_cycles);
+  assert(tk_loc_mtx(privacy_result_mutex_id, TMO_FEVR) == E_OK);
+  uint32_t buffer_index = PRIVACY_BACKGROUND_BUFFER_COUNT;
+  assert(PrivacyBufferPool_Acquire(&privacy_buffer_pool, &buffer_index));
+  privacy_buffer_wait_us[buffer_index] = buffer_wait_us;
+  assert(tk_unl_mtx(privacy_result_mutex_id) == E_OK);
+  assert(buffer_index < PRIVACY_BACKGROUND_BUFFER_COUNT);
+  return buffer_index;
+}
+
 static void WaitForLayerReload(uint32_t layer_index)
 {
   const uint32_t started_at = HAL_GetTick();
   while ((LTDC_LAYER(&hlcd_ltdc, layer_index)->RCR & LTDC_LxRCR_VBR) != 0U)
+  {
+    assert((HAL_GetTick() - started_at) < CAMERA_FRAME_TIMEOUT_MS);
+    (void)tk_dly_tsk(1U);
+  }
+}
+
+static void WaitForReload(void)
+{
+  const uint32_t started_at = HAL_GetTick();
+  while ((hlcd_ltdc.Instance->SRCR & LTDC_SRCR_VBR) != 0U)
   {
     assert((HAL_GetTick() - started_at) < CAMERA_FRAME_TIMEOUT_MS);
     (void)tk_dly_tsk(1U);

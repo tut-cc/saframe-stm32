@@ -37,17 +37,21 @@ MASKまたはMOSAIC処理が完了したフレームだけをLTDCへ公開する
 
 ## Consequences
 
-- フレーム状態は`WORKING → PROCESSED → PUBLISHED`または
-  `WORKING → PROCESSED → DROPPED`だけを許可する。
-- VisionタスクはRenderタスクが公開または破棄を確定するまで作業バッファを再利用
-  しない。公開時はLTDCのVBlankリロード完了を待ってから旧表示バッファを再利用する。
+- フレーム状態は`FREE → CAPTURING → PROCESSED → DISPLAYED`または
+  `FREE → CAPTURING → PROCESSED → DROPPED → FREE`だけを許可する。
+- RGB565背景は3面とし、VisionタスクとRenderタスクの間を固定長FIFOで接続する。
+  各バッファは所有状態とSemaphoreで管理し、公開時はLTDCのVBlankリロード完了後に
+  旧表示バッファだけを`FREE`へ戻す。
+- 背景と状態表示前景は同じLTDCグローバルVBlankリロードで同時に反映し、フレーム
+  ごとのVBlank待ちは1回にする。
 - センサー起動直後はPipe 1だけで非公開バッファへ1枚snapshot取得して破棄し、カメラ
   のストリーム開始を確認してからPipe 1とPipe 2の同時snapshot待ちへ移る。
 - MASKはRGB565画素を黒化し、MOSAICは同じ非公開バッファ内でRGB565各成分の
   ブロック平均を計算する。ARGB4444前景レイヤは状態表示専用とする。
 - カメラタイムアウト時は最後の安全化済みフレームを保持し、前景レイヤにエラーを表示
   する。
-- RGB565背景バッファが2面必要になり、PSRAM使用量が768,000 byte増える。
+- RGB565背景バッファが3面必要になり、単一バッファ構成に対するPSRAM使用量は
+  1,536,000 byte増える。
 - 現在の対象はSTM32N6570-DKのLCD 800×480のみ。HD 1280×720、letterbox、USB
   UVC、独自クラスモデルは後続マイルストーンとする。
 
