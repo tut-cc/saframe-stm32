@@ -1,0 +1,28 @@
+{
+  "contract_version": 1,
+  "id": "st_yoloxn_d033_w025_320_int8_coco_person",
+  "source": {
+    "repository": "https://github.com/STMicroelectronics/stm32ai-modelzoo.git",
+    "revision": "1423c78953a830903485135febe1dd98ff31aed8",
+    "path": "object_detection/st_yoloxn/ST_pretrainedmodel_public_dataset/coco_2017_person/st_yoloxn_d033_w025_320/st_yoloxn_d033_w025_320_int8.tflite",
+    "sha256": "e5a8a27200ba0d6ad7e0099c7bb373e605df7320647cd265d186788f1823fbfa"
+  },
+  "input": {
+    "width": 320,
+    "height": 320,
+    "channels": 3,
+    "format": "STAI_FORMAT_U8"
+  },
+  "outputs": {
+    "count": 3,
+    "format": "STAI_FORMAT_S8",
+    "grid_sizes": [10, 20, 40]
+  },
+  "postprocess": {
+    "type": "POSTPROCESS_OD_ST_YOLOX_UI",
+    "classes": ["person"],
+    "confidence_threshold": 0.6,
+    "iou_threshold": 0.5,
+    "max_boxes": 10
+  }
+}

@@ -57,6 +57,9 @@
 #define CONTROL_PERIOD_MS        (20U)
 #define BUTTON_DEBOUNCE_MS       (200U)
 
+_Static_assert(NB_CLASSES <= PRIVACY_PROXY_CLASS_COUNT,
+               "model classes exceed privacy alias table");
+
 #ifndef PRIVACY_TEST_RENDER_DELAY_MS
 #define PRIVACY_TEST_RENDER_DELAY_MS (0U)
 #endif
@@ -258,7 +261,7 @@ void FaceDetection_Run(void)
   const bool weights_valid = NetworkWeightsValid();
   tm_printf((UB *)"OD: model weights at 0x%08x: %s.\n",
             NETWORK_WEIGHTS_ADDRESS, weights_valid ? "OK" : "MISSING OR INVALID");
-  for (uint32_t i = 0; i < PRIVACY_PROXY_CLASS_COUNT; i++)
+  for (uint32_t i = 0; i < NB_CLASSES; i++)
   {
     tm_printf((UB *)"OD: class %u %s => %s.\n", i,
               PrivacyProxyClass_InternalName(i), PrivacyProxyClass_DisplayName(i));
@@ -795,7 +798,8 @@ static void PublishPrivacyResult(od_pp_out_t *postprocess,
   for (uint32_t i = 0; i < candidate_count; i++)
   {
     const int32_t class_index = postprocess->pOutBuff[i].class_index;
-    if (!PrivacyProxyClass_IsValid(class_index))
+    if ((class_index < 0) || ((uint32_t)class_index >= NB_CLASSES) ||
+        !PrivacyProxyClass_IsValid(class_index))
     {
       continue;
     }

@@ -20,6 +20,12 @@
 - Model Zoo Services固定コミット: `0f6210ed5156126b782e1c43249063a477484b20`
 - Object Detectionテンプレート: https://github.com/STMicroelectronics/STM32N6-GettingStarted-ObjectDetection
 - Object Detection固定コミット: `7ae96b5452183664c0d9b3dfe06a82a6ed0e59cb` (`v2.3.0`)
+- STM32 AI Model Zoo: https://github.com/STMicroelectronics/stm32ai-modelzoo
+- 320 x 320 COCO-Personモデル固定コミット: `1423c78953a830903485135febe1dd98ff31aed8`
+- `st_yoloxn_d033_w025_320_int8.tflite` SHA-256:
+  `e5a8a27200ba0d6ad7e0099c7bb373e605df7320647cd265d186788f1823fbfa`
+- Neural-ART生成およびNPUランタイム: STEdgeAI Core 4.0.1／STM32 MCU 12.0.1
+  (`ll_aton` 1.1.3-dev275)
 - 使用範囲: ST-YOLOXモデルと重み、Neural-ART生成コード、物体検出後処理
 - ライセンス: 各ソースファイルおよび上記リポジトリのライセンスを参照
 

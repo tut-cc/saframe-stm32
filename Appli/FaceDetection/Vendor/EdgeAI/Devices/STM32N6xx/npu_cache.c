@@ -18,9 +18,7 @@
 
 #include "npu_cache.h"
 
-#ifndef USE_HAL_DRIVER
 #define USE_HAL_DRIVER  // Define here to fix header issues, must clean projects using only stm32n6xx.h for application code
-#endif
 #include "stm32n6xx.h"
 
 #include "ll_aton_config.h"

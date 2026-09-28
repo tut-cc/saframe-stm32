@@ -10,9 +10,12 @@ COCOの `person / book / stop sign` を代理的に
 
 ## 現在の固定構成
 
-- モデル: ST-YOLOX nano、480 x 480、UINT8入力／INT8出力、person 1クラス
-- 生成元: STM32 AI Model Zoo Services 4.1系と
-  `STM32N6-GettingStarted-ObjectDetection` v2.3.0
+- モデル: ST-YOLOX nano `d033_w025`、320 x 320、UINT8入力／INT8出力、person 1クラス
+- 生成元: STM32 AI Model Zoo Services
+  `0f6210ed5156126b782e1c43249063a477484b20`、STEdgeAI Core 4.0.1／
+  STM32 MCU 12.0.1、`STM32N6-GettingStarted-ObjectDetection` v2.3.0
+- NPUランタイム: STAI tools 4.0.1、LL_ATON 1.1.3-dev275、
+  NetworkRuntime 12.0.1（生成物と同じSTEdgeAI配布物一式）
 - 後処理: confidence 0.6、NMS 0.5、最大10件
 - 入出力: IMX335カメラ、STM32N6570-DK LCD
 - 実行: Vision、Render、Control/Monitorの3つのμT-Kernelタスク
@@ -44,31 +47,51 @@ Model Zoo Servicesの公式STM32N6テンプレート上で生成し、その生�
 μT-Kernelプロジェクトへimportします。
 
 ```bash
-git clone --depth 1 https://github.com/STMicroelectronics/stm32ai-modelzoo-services.git
+git clone https://github.com/STMicroelectronics/stm32ai-modelzoo-services.git
 cd stm32ai-modelzoo-services
+git checkout --detach 0f6210ed5156126b782e1c43249063a477484b20
 git submodule update --init application_code/object_detection/STM32N6
 
 export MODELZOO_SERVICES_ROOT="$PWD"
-export MODEL_PATH="<量子化済みモデル.tflite または .onnx>"
+export SAFRAME_ROOT="<このリポジトリの絶対パス>"
+export MODEL_PATH="<st_yoloxn_d033_w025_320_int8.tflite>"
 export STEDGEAI_PATH="<STEdgeAI>/Utilities/<platform>/stedgeai"
 export CUBEIDE_PATH="<STM32CubeIDE実行ファイル>"
-cp <このリポジトリ>/modelzoo/deployment_n6_object_detection.yaml \
-  object_detection/modelzoo_saframe.yaml
 cd object_detection
-python stm32ai_main.py --config-path . \
-  --config-name modelzoo_saframe.yaml
+MPLBACKEND=Agg python stm32ai_main.py \
+  --config-path "$SAFRAME_ROOT/modelzoo" \
+  --config-name deployment_n6_person_320.yaml \
+  model.model_path="$MODEL_PATH" \
+  tools.stedgeai.path_to_stedgeai="$STEDGEAI_PATH" \
+  tools.path_to_cubeIDE="$CUBEIDE_PATH" \
+  deployment.c_project_path=../application_code/object_detection/STM32N6/
+```
+
+Model Zoo Servicesの`requirements.txt`は専用Python環境にインストールします。
+この固定リビジョンではYAMLの環境変数展開に依存せず、上のHydra overrideで
+絶対パスを渡します。元TFLiteのリビジョンとSHA-256は
+`modelzoo/st_yoloxn_person_320.json`に固定されています。
+
+生成に使ったSTEdgeAIと組込み側ランタイムは一式で同期します。`stai.h`や
+`ll_aton_version.h`だけの部分更新は禁止です。
+
+```bash
+tools/sync_stedgeai_runtime.sh "<STEdgeAI>/Middlewares/ST/AI"
 ```
 
 生成後、このリポジトリで次を実行します。
 
 ```bash
 tools/import_modelzoo_object_detection.sh \
+  --contract modelzoo/st_yoloxn_person_320.json \
   "$MODELZOO_SERVICES_ROOT/application_code/object_detection/STM32N6"
 ```
 
-importスクリプトは320 x 320 RGB、3クラス、クラス順
-`person / book / stop sign`を検査します。不一致な生成物は既存モデルを
-上書きする前に拒否し、新しい重みの実行時署名も自動生成します。
+importスクリプトは指定した契約ファイルに従って入力形状、入出力型、クラス数と順序、
+後処理、出力テンソルに加え、生成コードとLL_ATON、STAI、静的ランタイムの世代を
+検査します。不一致な生成物は既存モデルを上書きする前に拒否し、新しい重みの実行時
+署名も自動生成します。`--contract`を省略した場合は、将来用の
+代理3クラス契約`modelzoo/st_yoloxn_proxy3_320.json`を使用します。
 
 YOLOv8を使う場合はYAMLの`model_type`を`yolov8n`へ変更します。YOLOv8、
 YOLOv11、YOLO26は同じ`POSTPROCESS_OD_YOLO_V8_UI`経路を使うため、対応する
@@ -82,7 +105,7 @@ YOLOv11、YOLO26は同じ`POSTPROCESS_OD_YOLO_V8_UI`経路を使うため、対�
 この構成を選んだ理由、棄却した方式、保証する状態遷移は
 [ADR 0006](docs/adr/0006-publish-only-sanitized-frames.md)に記録しています。
 
-LCD背景はRGB565二重バッファで管理します。DCMIPPは非公開の作業バッファへ
+LCD背景はRGB565四重バッファで管理します。DCMIPPは非公開の作業バッファへ
 snapshot取得し、AI推論とマスク／モザイク処理が完了したフレームだけをVBlankで
 表示バッファへ切り替えます。処理開始から33 msを超えたフレームは破棄され、LCDは
 直前の安全化済みフレームを保持します。最初の安全化済みフレームが完成するまでは
@@ -134,6 +157,7 @@ cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
 ASAN_OPTIONS=detect_leaks=0 /tmp/privacy_filter_test
 ```
 
-実機での連続動作、フレームレート、480 x 480モデルの推論時間は未確認です。
-計画書の320 x 320・30 ms目標は、まずこの固定モデルで一連の経路を確認した後、
-Model Zooのbenchmarking結果を基にモデルを選定して検証します。
+480 x 480モデルでは推論約28.5 ms、NNコピーを含む合計約35 msとなり、33 ms期限を
+超えることを実機で確認しました。現在の320 x 320モデルはこの結果を受けて選定した
+もので、モデル選定理由と受入条件は[ADR 0007](docs/adr/0007-select-st-yolox-320-person.md)に
+記録しています。320版の実機性能は新しい重みを書き込んだ後に再測定します。
