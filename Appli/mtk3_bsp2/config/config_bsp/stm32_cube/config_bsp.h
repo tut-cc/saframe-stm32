@@ -34,6 +34,15 @@
 #define USE_DEBUG_SYSMEMINFO   (1)		// 1:Valid   0:invalid
 
 /* ------------------------------------------------------------------------ */
+/*
+ *  Stack pointer monitoring function
+ *     dispatch.S re-arms MSPLIM to the bottom of each task stack (and of
+ *     knl_tmp_stack) on every dispatch, so a stack overflow raises a
+ *     UsageFault (STKOF) instead of silently corrupting the Imalloc arena.
+ */
+#define USE_SPMON		(1)		// 1:Valid   0:invalid
+
+/* ------------------------------------------------------------------------ */
 /* Device usage settings
  *	1: Use   0: Do not use
  */

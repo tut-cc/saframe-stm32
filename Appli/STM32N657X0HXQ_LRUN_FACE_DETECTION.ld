@@ -159,11 +159,20 @@ SECTIONS
   ._user_heap_stack :
   {
     . = ALIGN(8);
-    PROVIDE ( end = . );
-    PROVIDE ( _end = . );
+    /* [__libc_heap_start, __libc_heap_end) belongs to newlib's _sbrk (see
+     * sysmem.c). _Min_Stack_Size below is only a sizing check (the real MSP
+     * stack lives at the top of RAM, from _sstack to _estack); it is kept
+     * here unallocated to any C symbol so it stays out of both allocators'
+     * reach. _end/end are placed AFTER this whole reservation, since the
+     * micro T-Kernel Imalloc region (sys_start.c) starts at _end -- keeping
+     * _end here would make Imalloc overlap the newlib heap. */
+    PROVIDE ( __libc_heap_start = . );
     . = . + _Min_Heap_Size;
+    PROVIDE ( __libc_heap_end = . );
     . = . + _Min_Stack_Size;
     . = ALIGN(8);
+    PROVIDE ( end = . );
+    PROVIDE ( _end = . );
   } >AXISRAM1_S
 
   .flash_section :
@@ -179,14 +188,6 @@ SECTIONS
     *(.psram_bss)
     . = ALIGN(32);
   } >PSRAM
-
-  /* Remove information from the compiler libraries */
-  /DISCARD/ :
-  {
-    libc.a ( * )
-    libm.a ( * )
-    libgcc.a ( * )
-  }
 
   .ARM.attributes 0 : { *(.ARM.attributes) }
 }

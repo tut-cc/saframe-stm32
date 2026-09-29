@@ -68,8 +68,22 @@
 /*---------------------------------------------------------------------- */
 /* Stack size definition
  */
+/* Linker (STM32N657X0HXQ_LRUN_FACE_DETECTION.ld): AXISRAM1_S ORIGIN=0x34000400
+ * LENGTH=1023K -> _estack = 0x34100000 (= CNF_SYSTEMAREA_END);
+ * _Min_Stack_Size = 0x1000 -> _sstack = _estack - _Min_Stack_Size =
+ * 0x340FF000.
+ * Imalloc ceiling = CNF_SYSTEMAREA_END - CNF_EXC_STACK_SIZE, so 0x1000 makes
+ * that ceiling equal _sstack: the Imalloc arena [_end, 0x340FF000) and the
+ * linker's startup MSP reservation [_sstack, _estack) exactly partition the
+ * top of AXISRAM1. Overflow protection comes from USE_SPMON (config_bsp.h):
+ * MSPLIM stays at _sstack until the first dispatch, then dispatch.S re-arms
+ * it to the bottom of knl_tmp_stack or of the running task's stack.
+ * Tasks run on MSP, so every task's stksz must also cover nested interrupt
+ * frames; exceeding it raises a UsageFault (STKOF). */
 #define CNF_EXC_STACK_SIZE	(0x1000)	/* Match linker-reserved MSP stack */
-#define	CNF_TMP_STACK_SIZE	(256)	/* Temporary stack size */
+/* knl_tmp_stack hosts interrupt handlers while no task is running (idle
+ * after tk_ext_tsk), so it is sized above the 256 B default. */
+#define	CNF_TMP_STACK_SIZE	(1024)	/* Temporary stack size */
 
 
 /*---------------------------------------------------------------------- */

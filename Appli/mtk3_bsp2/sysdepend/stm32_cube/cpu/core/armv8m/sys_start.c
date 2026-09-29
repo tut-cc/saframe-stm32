@@ -116,9 +116,17 @@ EXPORT void knl_start_mtkernel(void)
 #endif	// USE_DEBUG_MEMINFO
 #endif	// USE_IMALLOC
 
+#if !USE_SPMON
 	/* Temporarily disable stack pointer protection */
 	// set_msplim((uint32_t)INTERNAL_RAM_START);
 	Asm ("msr msplim, %0" : : "r" ((uint32_t)INTERNAL_RAM_START));
+#endif
+	/*
+	 * With USE_SPMON, MSPLIM stays at _sstack (set by Reset_Handler) so the
+	 * startup stack remains protected during knl_main(). dispatch.S lowers
+	 * MSPLIM itself before switching SP to knl_tmp_stack or a task stack,
+	 * then re-arms it to that stack's bottom.
+	 */
 
 	/* Startup Kernel */
 	knl_main();		// *** No return ****/

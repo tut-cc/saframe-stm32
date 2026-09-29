@@ -34,39 +34,41 @@ static uint8_t *__sbrk_heap_end = NULL;
  *        and others from the C library
  *
  * @verbatim
- * ############################################################################
- * #  .data  #  .bss  #       newlib heap       #          MSP stack          #
- * #         #        #                         # Reserved by _Min_Stack_Size #
- * ############################################################################
- * ^-- RAM start      ^-- _end                             _estack, RAM end --^
+ * #########################################################################
+ * # .data # .bss # newlib heap # sizing pad # Imalloc arena #  MSP stack  #
+ * #       #      #    512 B    #   0x1000   #               #             #
+ * #########################################################################
+ * ^ RAM start    ^ __libc_heap_start        ^ _end          ^ _sstack     ^ _estack
  * @endverbatim
  *
- * This implementation starts allocating at the '_end' linker symbol
- * The '_Min_Stack_Size' linker symbol reserves a memory for the MSP stack
- * The implementation considers '_estack' linker symbol to be RAM end
- * NOTE: If the MSP stack, at any point during execution, grows larger than the
- * reserved size, please increase the '_Min_Stack_Size'.
+ * This implementation allocates strictly within [__libc_heap_start,
+ * __libc_heap_end), the ._user_heap_stack heap block reserved by
+ * '_Min_Heap_Size' in the linker script. That range belongs to newlib only:
+ * micro T-Kernel's Imalloc region (sys_start.c) starts at the '_end' linker
+ * symbol, which the linker script places after this whole block, so the two
+ * allocators never overlap.
+ * NOTE: the block is only _Min_Heap_Size = 0x200 = 512 bytes, sized for
+ * T-Monitor output formatting only, not for general dynamic allocation.
+ * NOTE: the check below is upper-bounded only. A negative 'incr' is not
+ * validated and can move '__sbrk_heap_end' below '__libc_heap_start'.
  *
  * @param incr Memory size
  * @return Pointer to allocated memory
  */
 void *_sbrk(ptrdiff_t incr)
 {
-  extern uint8_t _end; /* Symbol defined in the linker script */
-  extern uint8_t _estack; /* Symbol defined in the linker script */
-  extern uint32_t _Min_Stack_Size; /* Symbol defined in the linker script */
-  const uint32_t stack_limit = (uint32_t)&_estack - (uint32_t)&_Min_Stack_Size;
-  const uint8_t *max_heap = (uint8_t *)stack_limit;
+  extern uint8_t __libc_heap_start; /* Symbol defined in the linker script */
+  extern uint8_t __libc_heap_end; /* Symbol defined in the linker script */
   uint8_t *prev_heap_end;
 
   /* Initialize heap end at first call */
   if (NULL == __sbrk_heap_end)
   {
-    __sbrk_heap_end = &_end;
+    __sbrk_heap_end = &__libc_heap_start;
   }
 
-  /* Protect heap from growing into the reserved MSP stack */
-  if (__sbrk_heap_end + incr > max_heap)
+  /* Protect heap from growing past the reserved newlib heap block */
+  if (__sbrk_heap_end + incr > &__libc_heap_end)
   {
     errno = ENOMEM;
     return (void *)-1;
