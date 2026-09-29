@@ -99,6 +99,10 @@
 									<listOptionValue builtIn="false" value="../FaceDetection/Vendor/UVC/uvcl/Src"/>
 									<listOptionValue builtIn="false" value="../FaceDetection/Vendor/UVC/uvcl/Src/usbd"/>
 									<listOptionValue builtIn="false" value="../FaceDetection/Vendor/UVC/STM32_USB_Device_Library/Core/Inc"/>
+									<listOptionValue builtIn="false" value="../FaceDetection/Vendor/VENC/VideoEncoder/inc"/>
+									<listOptionValue builtIn="false" value="../FaceDetection/Vendor/VENC/VideoEncoder/source/common"/>
+									<listOptionValue builtIn="false" value="../FaceDetection/Vendor/VENC/VideoEncoder/source/h264"/>
+									<listOptionValue builtIn="false" value="../FaceDetection/Vendor/VENC/VideoEncoder_EWL"/>
 								</option>
 								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c.770108443" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c"/>
 							</tool>
@@ -145,6 +149,7 @@
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="FaceDetection/Vendor/Utilities/lcd"/>
 						<entry excluding="usbx" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="FaceDetection/Vendor/UVC/uvcl/Src"/>
 						<entry excluding="usbd_conf_template.c|usbd_desc_template.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="FaceDetection/Vendor/UVC/STM32_USB_Device_Library/Core/Src"/>
+						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="FaceDetection/Vendor/VENC"/>
 					</sourceEntries>
 				</configuration>
 			</storageModule>
@@ -246,6 +251,10 @@
 									<listOptionValue builtIn="false" value="../FaceDetection/Vendor/UVC/uvcl/Src"/>
 									<listOptionValue builtIn="false" value="../FaceDetection/Vendor/UVC/uvcl/Src/usbd"/>
 									<listOptionValue builtIn="false" value="../FaceDetection/Vendor/UVC/STM32_USB_Device_Library/Core/Inc"/>
+									<listOptionValue builtIn="false" value="../FaceDetection/Vendor/VENC/VideoEncoder/inc"/>
+									<listOptionValue builtIn="false" value="../FaceDetection/Vendor/VENC/VideoEncoder/source/common"/>
+									<listOptionValue builtIn="false" value="../FaceDetection/Vendor/VENC/VideoEncoder/source/h264"/>
+									<listOptionValue builtIn="false" value="../FaceDetection/Vendor/VENC/VideoEncoder_EWL"/>
 								</option>
 								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c.214638825" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c"/>
 							</tool>
@@ -292,6 +301,7 @@
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="FaceDetection/Vendor/Utilities/lcd"/>
 						<entry excluding="usbx" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="FaceDetection/Vendor/UVC/uvcl/Src"/>
 						<entry excluding="usbd_conf_template.c|usbd_desc_template.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="FaceDetection/Vendor/UVC/STM32_USB_Device_Library/Core/Src"/>
+						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="FaceDetection/Vendor/VENC"/>
 					</sourceEntries>
 				</configuration>
 			</storageModule>
