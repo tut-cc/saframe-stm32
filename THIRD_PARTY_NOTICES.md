@@ -3,6 +3,9 @@
 このプロジェクトは、次の既存コード資源を統合・改変して使用しています。
 各ファイルに付された著作権表示とライセンス条件も併せて参照してください。
 
+以下の「使用範囲」はリポジトリへ取り込んだコードです。設計やAPIの
+確認にだけ用い、コードを取り込んでいない資料は「参照のみ」と明記します。
+
 ## STM32N6 Getting Started — Face Detection
 
 - 提供者: STMicroelectronics
@@ -63,3 +66,59 @@
 - ライセンス: `Appli/FaceDetection/Vendor/UVC/uvcl/LICENSE`、
   `Appli/FaceDetection/Vendor/UVC/STM32_USB_Device_Library/LICENSE.md`、
   および各ソースファイルのライセンス表示を参照
+
+## STM32N6 H.264 UVC sample / VideoEncoder / EWL / LL VENC
+
+- 提供者: STMicroelectronics / Verisilicon
+- 取得元: https://github.com/STMicroelectronics/x-cube-n6-ai-h264-usb-uvc
+- 固定コミット: `530dcbb7b8778617cbd0c2080f6a320d2568d432`
+- 固定リリース: `v2.2.1`
+- 著作権者:
+  - VideoEncoder: Verisilicon Inc. (2015-2022) / Google Inc. (2011-2014)
+  - VideoEncoder_EWL / LL VENC: STMicroelectronics (2023)
+- 使用範囲: H.264 VideoEncoder API、共通encoderコード、EWL、STM32N6 LL VENCを
+  `Appli/FaceDetection/Vendor/VENC/`および`Appli/FaceDetection/Vendor/HAL/`へ取り込み
+- ローカル変更: μT-Kernel割り込み同期、アプリ管理の静的メモリ、GCC 14と
+  `stdbool.h`の互換性対応
+- 参照のみ: 取得元の`Src/app_enc.c`、`Src/app.c`、`Src/main.c`、
+  `Lib/uvcl/README.md`。FreeRTOS、USBX、参照アプリ本体は取り込んでいない
+- ライセンス: `Appli/FaceDetection/Vendor/VENC/VideoEncoder/LICENSE.txt`、
+  `Appli/FaceDetection/Vendor/VENC/VideoEncoder_EWL/LICENSE.txt`、
+  `Drivers/STM32N6xx_HAL_Driver/LICENSE.txt`および各ファイルの表示を参照
+- 詳細な取り込みパス、改変ファイル、参照資料:
+  `Appli/FaceDetection/Vendor/VENC/SOURCE.md`
+
+### BSD-3-Clause notice for VideoEncoder / EWL / LL VENC
+
+Copyright (c) 2015-2022, Verisilicon Inc. - All Rights Reserved<br>
+Copyright (c) 2011-2014, Google Inc. - All Rights Reserved<br>
+Copyright (c) 2023, STMicroelectronics. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice,
+   this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+3. Neither the name of the copyright holder nor the names of its contributors
+   may be used to endorse or promote products derived from this software
+   without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+## H.264方式について
+
+上記は取り込んだソースコードの著作権・ソフトウェアライセンスに関する
+記録です。H.264/AVC方式の特許ライセンスの要否は、ファームウェアの
+利用・配布方法と地域に応じて別途確認してください。

@@ -260,9 +260,9 @@ void FaceDetection_Run(void)
   RegisterApplicationInterrupts();
   tm_putstring((UB *)"OD: application interrupts registered.\n");
   UsbWebcam_Init();
-  tm_printf((UB *)"UVC: USB1/CN18 ready; MJPEG %ux%u@%u fps quality=%u.\n",
+  tm_printf((UB *)"UVC: USB1/CN18 ready; H.264 %ux%u@%u fps bitrate=%u.\n",
             USB_WEBCAM_WIDTH, USB_WEBCAM_HEIGHT, USB_WEBCAM_FPS,
-            USB_WEBCAM_JPEG_QUALITY);
+            USB_WEBCAM_BITRATE);
 
   const bool weights_valid = NetworkWeightsValid();
   tm_printf((UB *)"OD: model weights at 0x%08x: %s.\n",
@@ -403,6 +403,32 @@ void FaceDetection_PreHALInit(void)
   __HAL_RCC_SYSCLK_CONFIG(RCC_SYSCLKSOURCE_HSI);
 }
 
+extern uint8_t __uncached_bss_start__;
+extern uint8_t __uncached_bss_end__;
+
+static void UsbWebcam_MemoryConfig(void)
+{
+  MPU_Attributes_InitTypeDef attributes = {
+    .Number = MPU_ATTRIBUTES_NUMBER0,
+    .Attributes = MPU_NOT_CACHEABLE,
+  };
+  MPU_Region_InitTypeDef region = {
+    .Enable = MPU_REGION_ENABLE,
+    .Number = MPU_REGION_NUMBER0,
+    .BaseAddress = (uint32_t)&__uncached_bss_start__,
+    .LimitAddress = (uint32_t)&__uncached_bss_end__ - 1U,
+    .AttributesIndex = MPU_ATTRIBUTES_NUMBER0,
+    .AccessPermission = MPU_REGION_ALL_RW,
+    .DisableExec = MPU_INSTRUCTION_ACCESS_DISABLE,
+    .DisablePrivExec = MPU_PRIV_INSTRUCTION_ACCESS_DISABLE,
+    .IsShareable = MPU_ACCESS_NOT_SHAREABLE,
+  };
+
+  HAL_MPU_ConfigMemoryAttributes(&attributes);
+  HAL_MPU_ConfigRegion(&region);
+  HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
+}
+
 
 void FaceDetection_HardwareInit(void)
 {
@@ -410,6 +436,7 @@ void FaceDetection_HardwareInit(void)
   SCB_EnableICache();
 
 #if defined(USE_DCACHE)
+  UsbWebcam_MemoryConfig();
   /* Power on DCACHE */
   MEMSYSCTL->MSCR |= MEMSYSCTL_MSCR_DCACTIVE_Msk;
   SCB_EnableDCache();
@@ -485,6 +512,12 @@ static void USB1_InterruptHandler(UINT intno)
   UsbWebcam_IRQHandler();
 }
 
+static void VENC_InterruptHandler(UINT intno)
+{
+  (void)intno;
+  UsbWebcam_Venc_IRQHandler();
+}
+
 static void RegisterApplicationInterrupts(void)
 {
   const T_DINT csi_interrupt = {
@@ -503,11 +536,16 @@ static void RegisterApplicationInterrupts(void)
     .intatr = TA_HLNG,
     .inthdr = (FP)USB1_InterruptHandler,
   };
+  const T_DINT venc_interrupt = {
+    .intatr = TA_HLNG,
+    .inthdr = (FP)VENC_InterruptHandler,
+  };
 
   assert(tk_def_int(CSI_IRQn, &csi_interrupt) == E_OK);
   assert(tk_def_int(DCMIPP_IRQn, &dcmipp_interrupt) == E_OK);
   assert(tk_def_int(NPU0_IRQn, &npu_interrupt) == E_OK);
   assert(tk_def_int(USB1_OTG_HS_IRQn, &usb1_interrupt) == E_OK);
+  assert(tk_def_int(VENC_IRQn, &venc_interrupt) == E_OK);
 }
 
 static bool NetworkWeightsValid(void)
@@ -594,6 +632,7 @@ static void set_clk_sleep_mode(void)
   __HAL_RCC_DMA2D_CLK_SLEEP_ENABLE();    /* For display */
   __HAL_RCC_DCMIPP_CLK_SLEEP_ENABLE();   /* For camera configuration retention */
   __HAL_RCC_CSI_CLK_SLEEP_ENABLE();      /* For camera configuration retention */
+  __HAL_RCC_VENC_CLK_SLEEP_ENABLE();     /* For H.264 encode while the task waits */
 
   __HAL_RCC_FLEXRAM_MEM_CLK_SLEEP_ENABLE();
   __HAL_RCC_AXISRAM1_MEM_CLK_SLEEP_ENABLE();
@@ -602,6 +641,7 @@ static void set_clk_sleep_mode(void)
   __HAL_RCC_AXISRAM4_MEM_CLK_SLEEP_ENABLE();
   __HAL_RCC_AXISRAM5_MEM_CLK_SLEEP_ENABLE();
   __HAL_RCC_AXISRAM6_MEM_CLK_SLEEP_ENABLE(); 
+  __HAL_RCC_VENCRAM_MEM_CLK_SLEEP_ENABLE();
 
 }
 
@@ -622,9 +662,11 @@ static void Security_Config(void)
   HAL_RIF_RIMC_ConfigMasterAttributes(RIF_MASTER_INDEX_LTDC1 , &RIMC_master);
   HAL_RIF_RIMC_ConfigMasterAttributes(RIF_MASTER_INDEX_LTDC2 , &RIMC_master);
   HAL_RIF_RIMC_ConfigMasterAttributes(RIF_MASTER_INDEX_OTG1, &RIMC_master);
+  HAL_RIF_RIMC_ConfigMasterAttributes(RIF_MASTER_INDEX_VENC, &RIMC_master);
   HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RISC_PERIPH_INDEX_NPU , RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV);
   HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RISC_PERIPH_INDEX_DMA2D , RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV);
-  HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RISC_PERIPH_INDEX_JPEG  , RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV);
+  HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RISC_PERIPH_INDEX_VENC  , RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV);
+  HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RCC_PERIPH_INDEX_VENCRAM, RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV);
   HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RISC_PERIPH_INDEX_CSI    , RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV);
   HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RISC_PERIPH_INDEX_DCMIPP , RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV);
   HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RISC_PERIPH_INDEX_LTDC   , RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV);
@@ -1048,6 +1090,7 @@ static void ControlMonitorTask(INT stacd, void *exinf)
   uint32_t previous_inferred = privacy_inferred_frames;
   uint32_t previous_processed = privacy_processed_frames;
   uint32_t previous_published = privacy_published_total_frames;
+  uint32_t previous_uvc_encoded = UsbWebcam_EncodedFrames();
 
   while (1)
   {
@@ -1093,14 +1136,17 @@ static void ControlMonitorTask(INT stacd, void *exinf)
         const uint32_t inferred_fps10 = ((inferred - previous_inferred) * 10000U) / elapsed_ms;
         const uint32_t processed_fps10 = ((processed - previous_processed) * 10000U) / elapsed_ms;
         const uint32_t published_fps10 = ((published - previous_published) * 10000U) / elapsed_ms;
+        const uint32_t uvc_encoded = UsbWebcam_EncodedFrames();
+        const uint32_t uvc_encoded_fps10 = ((uvc_encoded - previous_uvc_encoded) * 10000U) / elapsed_ms;
         tm_printf((UB *)"OD: frame=%u mode=%s detections=%u face=%u document=%u logo=%u capture=%uus capture_wait=%uus copy=%uus ai=%uus pp=%uus "
                          "vision=%uus inv=%uus filter=%uus clean=%uus render=%uus total=%uus "
                          "ltdc=%uus vblank=%uus buffer_wait=%uus infer_wait=%uus render_wait=%uus "
                          "captured_fps=%u.%u inferred_fps=%u.%u processed_fps=%u.%u published_fps=%u.%u "
                          "capture_q=%u/%u render_q=%u/%u backpressure_skips=%u warmup=%s "
                          "published=%u dropped=%u consecutive=%u max_consecutive=%u max_published_total=%uus "
-                         "uvc=%s uvc_submitted=%u uvc_dropped=%u uvc_jpeg_bytes=%u "
-                         "uvc_convert_max=%uus uvc_encode_max=%uus.\n",
+                         "uvc=%s uvc_encoded_fps=%u.%u uvc_repeated=%u "
+                         "uvc_encode_dropped=%u uvc_last_bytes=%u uvc_encode_max_us=%u "
+                         "uvc_idr_count=%u.\n",
                   result.frame_number, PrivacyFilter_ModeName(result.applied_mode),
                   result.detection_count,
                   result.class_detection_count[PRIVACY_PROXY_FACE],
@@ -1124,13 +1170,15 @@ static void ControlMonitorTask(INT stacd, void *exinf)
                   result.consecutive_drops, privacy_maximum_consecutive_drops,
                   privacy_maximum_published_total_us,
                   UsbWebcam_IsStreaming() ? "streaming" : "idle",
-                  UsbWebcam_SubmittedFrames(), UsbWebcam_DroppedFrames(),
-                  UsbWebcam_LastJpegBytes(), UsbWebcam_MaximumConvertUs(),
-                  UsbWebcam_MaximumEncodeUs());
+                  uvc_encoded_fps10 / 10U, uvc_encoded_fps10 % 10U,
+                  UsbWebcam_RepeatedFrames(), UsbWebcam_EncodeDroppedFrames(),
+                  UsbWebcam_LastBytes(), UsbWebcam_MaximumEncodeUs(),
+                  UsbWebcam_IdrCount());
         previous_captured = captured;
         previous_inferred = inferred;
         previous_processed = processed;
         previous_published = published;
+        previous_uvc_encoded = uvc_encoded;
       }
       last_log_at = now;
     }
