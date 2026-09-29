@@ -79,6 +79,12 @@ volatile AppDiagnosticStage g_app_diagnostic_stage = APP_STAGE_STARTUP;
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+/*
+ * Called from the naked fault handlers below, which clear MSPLIM first: on a
+ * stack-limit fault (CFSR.STKOF) SP sits at the limit, so this function's own
+ * pushes would fault again. If stacking itself overflowed, the frame at
+ * 'stack' is incomplete and pc/lr are not meaningful; rely on cfsr/sp/stage.
+ */
 __attribute__((noreturn))
 void AppDiagnostics_RecordFault(uint32_t *stack, uint32_t kind)
 {
@@ -215,7 +221,9 @@ void NMI_Handler(void)
   */
 __attribute__((naked)) void HardFault_Handler(void)
 {
-  __asm volatile("tst lr, #4\n"
+  __asm volatile("movs r2, #0\n"
+                 "msr msplim, r2\n"
+                 "tst lr, #4\n"
                  "ite eq\n"
                  "mrseq r0, msp\n"
                  "mrsne r0, psp\n"
@@ -228,7 +236,9 @@ __attribute__((naked)) void HardFault_Handler(void)
   */
 __attribute__((naked)) void MemManage_Handler(void)
 {
-  __asm volatile("tst lr, #4\n"
+  __asm volatile("movs r2, #0\n"
+                 "msr msplim, r2\n"
+                 "tst lr, #4\n"
                  "ite eq\n"
                  "mrseq r0, msp\n"
                  "mrsne r0, psp\n"
@@ -241,7 +251,9 @@ __attribute__((naked)) void MemManage_Handler(void)
   */
 __attribute__((naked)) void BusFault_Handler(void)
 {
-  __asm volatile("tst lr, #4\n"
+  __asm volatile("movs r2, #0\n"
+                 "msr msplim, r2\n"
+                 "tst lr, #4\n"
                  "ite eq\n"
                  "mrseq r0, msp\n"
                  "mrsne r0, psp\n"
@@ -254,7 +266,9 @@ __attribute__((naked)) void BusFault_Handler(void)
   */
 __attribute__((naked)) void UsageFault_Handler(void)
 {
-  __asm volatile("tst lr, #4\n"
+  __asm volatile("movs r2, #0\n"
+                 "msr msplim, r2\n"
+                 "tst lr, #4\n"
                  "ite eq\n"
                  "mrseq r0, msp\n"
                  "mrsne r0, psp\n"
