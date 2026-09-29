@@ -1,6 +1,6 @@
 # 0008: 安全化済みフレームをUSB UVCへYUY2で出力する
 
-Status: accepted (2026-09-28)
+Status: superseded in part by ADR-0009 (2026-09-29): format, resolution and conversion
 
 ## Context
 

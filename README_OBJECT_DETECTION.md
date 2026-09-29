@@ -105,9 +105,11 @@ YOLOv11、YOLO26は同じ`POSTPROCESS_OD_YOLO_V8_UI`経路を使うため、対�
 この構成を選んだ理由、棄却した方式、保証する状態遷移は
 [ADR 0006](docs/adr/0006-publish-only-sanitized-frames.md)に記録しています。
 
-LCD背景はRGB565四重バッファで管理します。DCMIPPは非公開の作業バッファへ
-snapshot取得し、AI推論とマスク／モザイク処理が完了したフレームだけをVBlankで
-表示バッファへ切り替えます。処理開始から33 msを超えたフレームは破棄され、LCDは
+安全化フレームは1280 x 720のRGB565四重バッファで管理します。Pipe 1はNNが見る
+センサー中央の正方形から縦中央の16:9領域を切り出すため、公開する画素はすべて
+推論の対象です。LCDはこのフレームの中央800 x 450を等倍で表示します。DCMIPPは
+非公開の作業バッファへsnapshot取得し、AI推論とマスク／モザイク処理が完了した
+フレームだけをVBlankで表示バッファへ切り替えます。処理開始から33 msを超えたフレームは破棄され、LCDは
 直前の安全化済みフレームを保持します。最初の安全化済みフレームが完成するまでは
 黒画面です。
 
@@ -146,13 +148,14 @@ PRIVACY_TEST_RENDER_DELAY_MS=40
 切り替わらないことを確認できます。通常ビルドでは未定義、すなわち0 msです。
 
 安全化済みフレームはLCDに加えて、USB1 Type-CコネクタCN18からUVC Webカメラ
-として出力します。UVC形式は320 x 240、MJPEG（品質75）、10 fpsです。800 x 480の
-RGB565表示フレームの中央4:3領域を縮小してYCbCr 4:2:2のMCU列へ変換し、
-ハードウェアJPEGコーデックのポーリングモードでUSB専用二面バッファへ
-エンコードします。そのため、USB送信中のバッファがDCMIPPに再利用されることは
-ありません。ホストが未接続、ストリーミング停止中、USB送信が追いつかない場合、
-またはエンコード結果が76,800バイトの上限を超えた場合はUSBフレームだけを破棄し、
-LCDの公開処理は継続します。RAWフレームをUSBへ渡す経路はありません。
+として出力します。UVC形式は1280 x 720、MJPEG、15 fpsです。1280 x 720の
+安全化済みRGB565フレームをVENC（ハードウェア動画エンコーダ）のJPEGモードで
+USB専用二面バッファへ直接エンコードします。そのため、USB送信中のバッファが
+DCMIPPに再利用されることはありません。ホストが未接続、ストリーミング停止中、
+USB送信が追いつかない場合、またはエンコード結果が256 KiBの上限を超えた場合は
+USBフレームだけを破棄し、LCDの公開処理は継続します。RAWフレームをUSBへ渡す
+経路はありません。構成の理由は[ADR 0009](docs/adr/0009-usb-uvc-720p-venc-mjpeg.md)に
+記録しています。
 
 USBのHAL/UVC処理は割込み内ではなく、LCDのRender/Captureより低い優先度の専用
 タスクで行います。USBホストがストリーミングを開始してもLCD更新を優先します。
@@ -160,11 +163,10 @@ USBのHAL/UVC処理は割込み内ではなく、LCDのRender/Captureより低�
 CN18とホストをUSB Type-Cケーブルで接続し、OSのカメラアプリから`STM32 uvc`
 デバイスを選択してください。T-Monitorの`uvc=streaming`、`uvc_submitted`、
 `uvc_dropped`で接続状態と送信状況を、`uvc_jpeg_bytes`で直近のJPEGサイズを、
-`uvc_convert_max`と`uvc_encode_max`でMCU変換とJPEGエンコードの最大時間を
-確認できます。YUY2版では実機でUSB列挙、10 fps映像、LCD更新との同時動作を
-確認済みです。MJPEG版の実機確認と長時間連続動作は未確認です。HD 1280 x 720、
-30 fps、letterbox、H.264、および実際の顔・書類・ロゴを学習したモデルは後続の
-マイルストーンです。
+`uvc_encode_max`でVENCエンコードの最大時間を確認できます。320 x 240 MJPEG版
+（旧JPEGコーデック）までは実機で確認済みです。720p VENC版の実機確認と長時間
+連続動作は未確認です。30 fps（キャプチャの連続モード化）、H.264、および実際の
+顔・書類・ロゴを学習したモデルは後続のマイルストーンです。
 
 ホスト上のプライバシーフィルタ境界テストは次で実行できます。
 
@@ -173,15 +175,6 @@ cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
   -IAppli/FaceDetection/Inc tests/privacy_filter_test.c \
   Appli/FaceDetection/Src/privacy_filter.c -o /tmp/privacy_filter_test
 ASAN_OPTIONS=detect_leaks=0 /tmp/privacy_filter_test
-```
-
-RGB565からYCbCr 4:2:2 MCUへの変換と中央クロップは次でホスト試験できます。
-
-```bash
-cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
-  -IAppli/FaceDetection/Inc tests/usb_webcam_conversion_test.c \
-  Appli/FaceDetection/Src/usb_webcam_convert.c -o /tmp/usb_webcam_conversion_test
-ASAN_OPTIONS=detect_leaks=0 /tmp/usb_webcam_conversion_test
 ```
 
 480 x 480モデルでは推論約28.5 ms、NNコピーを含む合計約35 msとなり、33 ms期限を

@@ -49,7 +49,13 @@
 #define LCD_FG_WIDTH  SCREEN_WIDTH
 #define LCD_FG_HEIGHT SCREEN_HEIGHT
 #define LCD_FG_FRAMEBUFFER_SIZE  (LCD_FG_WIDTH * LCD_FG_HEIGHT * 2)
-#define LCD_BG_FRAMEBUFFER_SIZE  (SCREEN_WIDTH * SCREEN_HEIGHT * 2)
+#define PRIVACY_FRAME_BUFFER_SIZE (PRIVACY_FRAME_WIDTH * PRIVACY_FRAME_HEIGHT * 2U)
+
+/* The LCD shows the centre of the sanitized frame at 1:1. */
+#define LCD_BG_WIDTH    (SCREEN_WIDTH)
+#define LCD_BG_HEIGHT   (SCREEN_WIDTH * PRIVACY_FRAME_HEIGHT / PRIVACY_FRAME_WIDTH)
+#define LCD_BG_SOURCE_X ((PRIVACY_FRAME_WIDTH - LCD_BG_WIDTH) / 2U)
+#define LCD_BG_SOURCE_Y ((PRIVACY_FRAME_HEIGHT - LCD_BG_HEIGHT) / 2U)
 
 #define NETWORK_WEIGHTS_ADDRESS  (0x70380000UL)
 #define CAMERA_FRAME_TIMEOUT_MS  (3000U)
@@ -83,15 +89,16 @@ typedef struct
 
 /* Lcd Background area */
 Rectangle_TypeDef lcd_bg_area = {
-#if ASPECT_RATIO_MODE == ASPECT_RATIO_CROP || ASPECT_RATIO_MODE == ASPECT_RATIO_FIT
-  .X0 = (LCD_FG_WIDTH - LCD_FG_HEIGHT) / 2,
-#else
   .X0 = 0,
-#endif
-  .Y0 = 0,
-  .XSize = 0,
-  .YSize = 0,
+  .Y0 = (SCREEN_HEIGHT - LCD_BG_HEIGHT) / 2,
+  .XSize = LCD_BG_WIDTH,
+  .YSize = LCD_BG_HEIGHT,
 };
+
+/* Sanitized frame produced by Pipe 1, shared by the LCD and USB */
+static uint32_t privacy_frame_width;
+static uint32_t privacy_frame_height;
+static CameraPipeline_FrameWindow privacy_frame_window;
 
 /* Lcd Foreground area */
 Rectangle_TypeDef lcd_fg_area = {
@@ -133,10 +140,10 @@ static uint8_t nn_capture_buffer[PRIVACY_NN_BUFFER_COUNT][NN_CAPTURE_BUFFER_SIZE
 
 /* model */
 STAI_NETWORK_CONTEXT_DECLARE(network_context, STAI_NETWORK_CONTEXT_SIZE)
-/* Lcd Background Buffer */
+/* Sanitized frame buffers; the LCD background layer shows their centre */
 __attribute__ ((section (".psram_bss")))
 __attribute__ ((aligned (32)))
-static uint8_t lcd_bg_buffer[PRIVACY_BACKGROUND_BUFFER_COUNT][LCD_BG_FRAMEBUFFER_SIZE];
+static uint8_t privacy_frame_buffer[PRIVACY_BACKGROUND_BUFFER_COUNT][PRIVACY_FRAME_BUFFER_SIZE];
 static PrivacyBufferPool privacy_buffer_pool;
 static PrivacyNnBufferPool privacy_nn_buffer_pool;
 /* Lcd Foreground Buffer */
@@ -158,6 +165,8 @@ static bool privacy_completed_result_valid;
 static volatile PrivacyMode privacy_mode = PRIVACY_MODE_MASK;
 static volatile uint32_t privacy_published_frames;
 static volatile uint32_t privacy_published_total_frames;
+/* Largest MASK/MOSAIC time since the previous monitor line. */
+static volatile uint32_t privacy_window_maximum_filter_us;
 static volatile uint32_t privacy_captured_frames;
 static volatile uint32_t privacy_inferred_frames;
 static volatile uint32_t privacy_processed_frames;
@@ -184,6 +193,7 @@ static void IAC_Config(void);
 static void NeuralNetwork_init(uint32_t *nn_in_length, stai_ptr *nn_out, stai_size *number_output, int32_t nn_out_len[]);
 static void StartPrivacyTasks(void);
 static bool PrimeCamera(void);
+static void VencSelfTestWithCamera(void);
 static void PerformanceCounter_Init(void);
 static uint32_t PerformanceCounter_Now(void);
 static uint32_t PerformanceCounter_ToUs(uint32_t cycles);
@@ -291,11 +301,21 @@ void FaceDetection_Run(void)
   app_postprocess_init(&pp_params, &info);
 
   /*** Camera Init ************************************************************/
-  CameraPipeline_Init(&lcd_bg_area.XSize, &lcd_bg_area.YSize, &camera_pitch_nn);
-  tm_putstring((UB *)"OD: camera pipeline initialized.\n");
+  CameraPipeline_Init(&privacy_frame_width, &privacy_frame_height, &camera_pitch_nn);
+  assert(privacy_frame_width == PRIVACY_FRAME_WIDTH);
+  assert(privacy_frame_height == PRIVACY_FRAME_HEIGHT);
+  privacy_frame_window = CameraPipeline_GetFrameWindow();
+  tm_printf((UB *)"OD: camera pipeline initialized; frame %ux%u from NN square %u rows %u-%u.\n",
+            privacy_frame_width, privacy_frame_height,
+            privacy_frame_window.square_size, privacy_frame_window.y_in_square,
+            privacy_frame_window.y_in_square + privacy_frame_window.height_in_square);
+
+  /* TEMPORARY: VENC bus error diagnostic without and with LTDC traffic. */
+  UsbWebcam_SelfTest((const uint16_t *)privacy_frame_buffer[0], "idle");
 
   LCD_init();
   tm_putstring((UB *)"OD: LCD foreground layer initialized.\n");
+  UsbWebcam_SelfTest((const uint16_t *)privacy_frame_buffer[0], "ltdc");
 
   if (!weights_valid)
   {
@@ -320,6 +340,7 @@ void FaceDetection_Run(void)
     }
   }
   tm_putstring((UB *)"OD: camera primed; waiting for snapshot pipes.\n");
+  VencSelfTestWithCamera();
   StartPrivacyTasks();
 
   /*** Inference Loop *********************************************************/
@@ -451,10 +472,70 @@ void FaceDetection_CameraFrameCallback(uint32_t pipe)
   }
 }
 
+/* TEMPORARY: VENC error diagnostic. Encodes repeatedly while Pipe 1, Pipe 2
+ * or both capture a snapshot, to find which pipe disturbs the VENC. */
+static void VencSelfTestWithCamera(void)
+{
+  static const char *const names[3] = {"pipe1", "pipe2", "both"};
+  static const UINT waits[3] = {
+    DISPLAY_FRAME_READY, NN_FRAME_READY, DISPLAY_FRAME_READY | NN_FRAME_READY,
+  };
+
+  for (uint32_t test = 0U; test < 3U; test++)
+  {
+    uint32_t ok = 0U;
+    uint32_t runs = 0U;
+    int32_t last_error = 0;
+    for (uint32_t snapshot = 0U; snapshot < 8U; snapshot++)
+    {
+      UINT frame_pattern = 0U;
+      uint32_t runs_this_frame = 0U;
+      CameraPipeline_IspUpdate();
+      if (waits[test] & DISPLAY_FRAME_READY)
+      {
+        CameraPipeline_DisplayPipe_Start(privacy_frame_buffer[2], CMW_MODE_SNAPSHOT);
+      }
+      if (waits[test] & NN_FRAME_READY)
+      {
+        CameraPipeline_NNPipe_Start(nn_capture_buffer[0], CMW_MODE_SNAPSHOT);
+      }
+      while (tk_wai_flg(camera_frame_flag_id, waits[test],
+                        TWF_ANDW | TWF_BITCLR, &frame_pattern, TMO_POL) != E_OK)
+      {
+        if (runs_this_frame >= 20U)
+        {
+          /* Failures return quickly; just wait for the frame. */
+          (void)tk_dly_tsk(1U);
+          continue;
+        }
+        const int32_t error = UsbWebcam_SelfTestEncodeOnce(
+            (const uint16_t *)privacy_frame_buffer[0], false);
+        runs++;
+        runs_this_frame++;
+        if (error == 0)
+        {
+          ok++;
+        }
+        else
+        {
+          last_error = error;
+        }
+      }
+    }
+    tm_printf((UB *)"VENC selftest [%s] out=psram: ok=%u/%u last_error=%d.\n",
+              names[test], ok, runs, (int)last_error);
+    /* Encodes after the frame completes should succeed again. */
+    const int32_t after = UsbWebcam_SelfTestEncodeOnce(
+        (const uint16_t *)privacy_frame_buffer[0], false);
+    tm_printf((UB *)"VENC selftest [%s] after capture: error=%d.\n",
+              names[test], (int)after);
+  }
+}
+
 static bool PrimeCamera(void)
 {
   UINT frame_pattern = 0U;
-  CameraPipeline_DisplayPipe_Start(lcd_bg_buffer[1], CMW_MODE_SNAPSHOT);
+  CameraPipeline_DisplayPipe_Start(privacy_frame_buffer[1], CMW_MODE_SNAPSHOT);
   const ER ercd = tk_wai_flg(camera_frame_flag_id, DISPLAY_FRAME_READY,
                              TWF_ORW | TWF_BITCLR, &frame_pattern,
                              CAMERA_FRAME_TIMEOUT_MS);
@@ -485,6 +566,12 @@ static void USB1_InterruptHandler(UINT intno)
   UsbWebcam_IRQHandler();
 }
 
+static void VENC_InterruptHandler(UINT intno)
+{
+  (void)intno;
+  UsbWebcam_VencIRQHandler();
+}
+
 static void RegisterApplicationInterrupts(void)
 {
   const T_DINT csi_interrupt = {
@@ -503,11 +590,16 @@ static void RegisterApplicationInterrupts(void)
     .intatr = TA_HLNG,
     .inthdr = (FP)USB1_InterruptHandler,
   };
+  const T_DINT venc_interrupt = {
+    .intatr = TA_HLNG,
+    .inthdr = (FP)VENC_InterruptHandler,
+  };
 
   assert(tk_def_int(CSI_IRQn, &csi_interrupt) == E_OK);
   assert(tk_def_int(DCMIPP_IRQn, &dcmipp_interrupt) == E_OK);
   assert(tk_def_int(NPU0_IRQn, &npu_interrupt) == E_OK);
   assert(tk_def_int(USB1_OTG_HS_IRQn, &usb1_interrupt) == E_OK);
+  assert(tk_def_int(VENC_IRQn, &venc_interrupt) == E_OK);
 }
 
 static bool NetworkWeightsValid(void)
@@ -622,9 +714,10 @@ static void Security_Config(void)
   HAL_RIF_RIMC_ConfigMasterAttributes(RIF_MASTER_INDEX_LTDC1 , &RIMC_master);
   HAL_RIF_RIMC_ConfigMasterAttributes(RIF_MASTER_INDEX_LTDC2 , &RIMC_master);
   HAL_RIF_RIMC_ConfigMasterAttributes(RIF_MASTER_INDEX_OTG1, &RIMC_master);
+  HAL_RIF_RIMC_ConfigMasterAttributes(RIF_MASTER_INDEX_VENC, &RIMC_master);
   HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RISC_PERIPH_INDEX_NPU , RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV);
   HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RISC_PERIPH_INDEX_DMA2D , RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV);
-  HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RISC_PERIPH_INDEX_JPEG  , RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV);
+  HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RISC_PERIPH_INDEX_VENC  , RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV);
   HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RISC_PERIPH_INDEX_CSI    , RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV);
   HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RISC_PERIPH_INDEX_DCMIPP , RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV);
   HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RISC_PERIPH_INDEX_LTDC   , RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV);
@@ -649,6 +742,12 @@ void IAC_IRQHandler(void)
 }
 
 /* Display functions */
+static uint32_t LcdBackgroundAddress(const uint8_t *frame)
+{
+  return (uint32_t)(frame +
+      ((LCD_BG_SOURCE_Y * PRIVACY_FRAME_WIDTH) + LCD_BG_SOURCE_X) * 2U);
+}
+
 static int clamp_point(int *x, int *y)
 {
   int xi = *x;
@@ -658,24 +757,36 @@ static int clamp_point(int *x, int *y)
     *x = 0;
   if (*y < 0)
     *y = 0;
-  if (*x >= (int)lcd_bg_area.XSize)
-    *x = lcd_bg_area.XSize - 1;
-  if (*y >= (int)lcd_bg_area.YSize)
-    *y = lcd_bg_area.YSize - 1;
+  if (*x >= (int)privacy_frame_width)
+    *x = privacy_frame_width - 1;
+  if (*y >= (int)privacy_frame_height)
+    *y = privacy_frame_height - 1;
 
   return (xi != *x) || (yi != *y);
 }
 
+/* NN outputs are normalized to the square the NN pipe crops. The frame spans
+ * the full square width but only rows [y_in_square, y_in_square + height) of
+ * it, so vertical positions are shifted and both axes are rescaled. */
+static float32_t frame_rows_per_square(void)
+{
+  return (float32_t)privacy_frame_height *
+         (float32_t)privacy_frame_window.square_size /
+         (float32_t)privacy_frame_window.height_in_square;
+}
+
 static void convert_length(float32_t wi, float32_t hi, int *wo, int *ho)
 {
-  *wo = lcd_bg_area.XSize * wi;
-  *ho = lcd_bg_area.YSize * hi;
+  *wo = privacy_frame_width * wi;
+  *ho = frame_rows_per_square() * hi;
 }
 
 static void convert_point(float32_t xi, float32_t yi, int *xo, int *yo)
 {
-  *xo = lcd_bg_area.XSize * xi;
-  *yo = lcd_bg_area.YSize * yi;
+  const float32_t y_offset = (float32_t)privacy_frame_window.y_in_square /
+                             (float32_t)privacy_frame_window.square_size;
+  *xo = privacy_frame_width * xi;
+  *yo = frame_rows_per_square() * (yi - y_offset);
 }
 
 static PrivacyRoi MakePrivacyRoi(const od_pp_outBuffer_t *detection)
@@ -739,7 +850,7 @@ static void CaptureTask(INT stacd, void *exinf)
 
     g_app_diagnostic_stage = APP_STAGE_CAMERA_CAPTURE;
     const uint32_t capture_started_cycles = PerformanceCounter_Now();
-    CameraPipeline_DisplayPipe_Start(lcd_bg_buffer[rgb_buffer_index],
+    CameraPipeline_DisplayPipe_Start(privacy_frame_buffer[rgb_buffer_index],
                                      CMW_MODE_SNAPSHOT);
     CameraPipeline_NNPipe_Start(nn_capture_buffer[nn_buffer_index],
                                 CMW_MODE_SNAPSHOT);
@@ -892,8 +1003,8 @@ static void PrivacyRenderTask(INT stacd, void *exinf)
     const PrivacyMode mode = privacy_mode;
     result.applied_mode = mode;
     assert(result.state == PRIVACY_FRAME_PROCESSED);
-    uint8_t *working_buffer = lcd_bg_buffer[result.buffer_index];
-    const uint32_t active_frame_size = lcd_bg_area.XSize * lcd_bg_area.YSize * 2U;
+    uint8_t *working_buffer = privacy_frame_buffer[result.buffer_index];
+    const uint32_t active_frame_size = PRIVACY_FRAME_BUFFER_SIZE;
 
     g_app_diagnostic_frame = result.frame_number;
     g_app_diagnostic_stage = APP_STAGE_CACHE_INVALIDATE;
@@ -905,9 +1016,13 @@ static void PrivacyRenderTask(INT stacd, void *exinf)
     g_app_diagnostic_stage = APP_STAGE_PRIVACY_FILTER;
     phase_started_cycles = PerformanceCounter_Now();
     PrivacyFilter_ApplyRgb565(&result, mode, (uint16_t *)working_buffer,
-                              lcd_bg_area.XSize, lcd_bg_area.YSize);
+                              privacy_frame_width, privacy_frame_height);
     result.filter_us = PerformanceCounter_ToUs(
         PerformanceCounter_Now() - phase_started_cycles);
+    if (result.filter_us > privacy_window_maximum_filter_us)
+    {
+      privacy_window_maximum_filter_us = result.filter_us;
+    }
 
     g_app_diagnostic_stage = APP_STAGE_CACHE_CLEAN;
     phase_started_cycles = PerformanceCounter_Now();
@@ -947,7 +1062,7 @@ static void PrivacyRenderTask(INT stacd, void *exinf)
       g_app_diagnostic_stage = APP_STAGE_LTDC_RELOAD;
       phase_started_cycles = PerformanceCounter_Now();
       assert(HAL_LTDC_SetAddress_NoReload(
-          &hlcd_ltdc, (uint32_t)working_buffer, LTDC_LAYER_1) == HAL_OK);
+          &hlcd_ltdc, LcdBackgroundAddress(working_buffer), LTDC_LAYER_1) == HAL_OK);
       ltdc_cycles += PerformanceCounter_Now() - phase_started_cycles;
       result.state = PRIVACY_FRAME_DISPLAYED;
       privacy_published_frames++;
@@ -1013,8 +1128,7 @@ static void PrivacyRenderTask(INT stacd, void *exinf)
 
     if (publish)
     {
-      (void)UsbWebcam_SubmitRgb565((const uint16_t *)working_buffer,
-                                   lcd_bg_area.XSize, lcd_bg_area.YSize);
+      (void)UsbWebcam_SubmitRgb565((const uint16_t *)working_buffer);
     }
 
     assert(tk_loc_mtx(privacy_result_mutex_id, TMO_FEVR) == E_OK);
@@ -1093,6 +1207,7 @@ static void ControlMonitorTask(INT stacd, void *exinf)
         const uint32_t inferred_fps10 = ((inferred - previous_inferred) * 10000U) / elapsed_ms;
         const uint32_t processed_fps10 = ((processed - previous_processed) * 10000U) / elapsed_ms;
         const uint32_t published_fps10 = ((published - previous_published) * 10000U) / elapsed_ms;
+        const UsbWebcam_DropCounts uvc_drops = UsbWebcam_GetDropCounts();
         tm_printf((UB *)"OD: frame=%u mode=%s detections=%u face=%u document=%u logo=%u capture=%uus capture_wait=%uus copy=%uus ai=%uus pp=%uus "
                          "vision=%uus inv=%uus filter=%uus clean=%uus render=%uus total=%uus "
                          "ltdc=%uus vblank=%uus buffer_wait=%uus infer_wait=%uus render_wait=%uus "
@@ -1100,7 +1215,8 @@ static void ControlMonitorTask(INT stacd, void *exinf)
                          "capture_q=%u/%u render_q=%u/%u backpressure_skips=%u warmup=%s "
                          "published=%u dropped=%u consecutive=%u max_consecutive=%u max_published_total=%uus "
                          "uvc=%s uvc_submitted=%u uvc_dropped=%u uvc_jpeg_bytes=%u "
-                         "uvc_convert_max=%uus uvc_encode_max=%uus.\n",
+                         "uvc_encode_max=%uus filter_max=%uus uvc_starts=%u uvc_drop_busy=%u "
+                         "uvc_drop_encode=%u uvc_drop_show=%u venc_error=%d.\n",
                   result.frame_number, PrivacyFilter_ModeName(result.applied_mode),
                   result.detection_count,
                   result.class_detection_count[PRIVACY_PROXY_FACE],
@@ -1125,8 +1241,11 @@ static void ControlMonitorTask(INT stacd, void *exinf)
                   privacy_maximum_published_total_us,
                   UsbWebcam_IsStreaming() ? "streaming" : "idle",
                   UsbWebcam_SubmittedFrames(), UsbWebcam_DroppedFrames(),
-                  UsbWebcam_LastJpegBytes(), UsbWebcam_MaximumConvertUs(),
-                  UsbWebcam_MaximumEncodeUs());
+                  UsbWebcam_LastJpegBytes(), UsbWebcam_MaximumEncodeUs(),
+                  privacy_window_maximum_filter_us, uvc_drops.stream_starts,
+                  uvc_drops.busy, uvc_drops.encode, uvc_drops.show,
+                  (int)uvc_drops.last_encode_error);
+        privacy_window_maximum_filter_us = 0U;
         previous_captured = captured;
         previous_inferred = inferred;
         previous_processed = processed;
@@ -1197,8 +1316,8 @@ static void StartPrivacyTasks(void)
 
 static void LCD_init(void)
 {
-  memset(lcd_bg_buffer, 0, sizeof(lcd_bg_buffer));
-  SCB_CleanDCache_by_Addr(lcd_bg_buffer, sizeof(lcd_bg_buffer));
+  memset(privacy_frame_buffer, 0, sizeof(privacy_frame_buffer));
+  SCB_CleanDCache_by_Addr(privacy_frame_buffer, sizeof(privacy_frame_buffer));
   BSP_LCD_Init(0, LCD_ORIENTATION_LANDSCAPE);
 
   /* Preview layer Init */
@@ -1207,9 +1326,13 @@ static void LCD_init(void)
   LayerConfig.X1          = lcd_bg_area.X0 + lcd_bg_area.XSize;
   LayerConfig.Y1          = lcd_bg_area.Y0 + lcd_bg_area.YSize;
   LayerConfig.PixelFormat = LCD_PIXEL_FORMAT_RGB565;
-  LayerConfig.Address     = (uint32_t) lcd_bg_buffer[0];
+  LayerConfig.Address     = LcdBackgroundAddress(privacy_frame_buffer[0]);
 
   BSP_LCD_ConfigLayer(0, LTDC_LAYER_1, &LayerConfig);
+  /* The window is narrower than the frame. HAL_LTDC_SetAddress_NoReload
+   * recomputes the pitch from ImageWidth, so store the frame width there. */
+  hlcd_ltdc.LayerCfg[LTDC_LAYER_1].ImageWidth = PRIVACY_FRAME_WIDTH;
+  assert(HAL_LTDC_SetPitch(&hlcd_ltdc, PRIVACY_FRAME_WIDTH, LTDC_LAYER_1) == HAL_OK);
 
   LayerConfig.X0 = lcd_fg_area.X0;
   LayerConfig.Y0 = lcd_fg_area.Y0;

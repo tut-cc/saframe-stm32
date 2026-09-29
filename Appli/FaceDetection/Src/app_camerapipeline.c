@@ -28,49 +28,53 @@
 #undef assert
 #define assert(condition) APP_ASSERT(condition)
 
+#ifndef MIN
+#define MIN(a, b) (((a) < (b)) ? (a) : (b))
+#endif
+
 /* Leave the driver use the default resolution */
 #define CAMERA_WIDTH 0
 #define CAMERA_HEIGHT 0
 #define CAMERA_FPS 30
 
-static void DCMIPP_PipeInitDisplay(CMW_CameraInit_t *camConf, uint32_t *bg_width, uint32_t *bg_height)
+#if ASPECT_RATIO_MODE != ASPECT_RATIO_CROP
+#error "The Pipe 1 frame window assumes the NN pipe crops a centered square."
+#endif
+
+static CameraPipeline_FrameWindow frame_window;
+
+/* Pipe 1 takes a 16:9 window from the vertical middle of the square the NN
+ * pipe crops, so every published pixel has been seen by the NN. */
+static void DCMIPP_PipeInitDisplay(CMW_CameraInit_t *camConf, uint32_t *frame_width, uint32_t *frame_height)
 {
-  CMW_Aspect_Ratio_Mode_t aspect_ratio;
   CMW_DCMIPP_Conf_t dcmipp_conf = {0};
   int ret;
 
-  if (ASPECT_RATIO_MODE == ASPECT_RATIO_CROP)
-  {
-    aspect_ratio = CMW_Aspect_ratio_crop;
-  }
-  else if (ASPECT_RATIO_MODE == ASPECT_RATIO_FIT)
-  {
-    aspect_ratio = CMW_Aspect_ratio_fit;
-  }
-  else if (ASPECT_RATIO_MODE == ASPECT_RATIO_FULLSCREEN)
-  {
-    aspect_ratio = CMW_Aspect_ratio_fullscreen;
-  }
+  const uint32_t square_size = MIN(camConf->width, camConf->height);
+  const uint32_t square_x = (camConf->width - square_size + 1U) / 2U;
+  const uint32_t square_y = (camConf->height - square_size + 1U) / 2U;
+  /* Keep offsets and height even so the Bayer phase is preserved. */
+  const uint32_t height_in_square =
+    ((square_size * PRIVACY_FRAME_HEIGHT / PRIVACY_FRAME_WIDTH) + 1U) & ~1U;
+  const uint32_t y_in_square = ((square_size - height_in_square) / 2U) & ~1U;
+  assert(height_in_square <= square_size);
 
-  int lcd_bg_width;
-  int lcd_bg_height;
+  frame_window.square_size = square_size;
+  frame_window.y_in_square = y_in_square;
+  frame_window.height_in_square = height_in_square;
 
-  lcd_bg_height = (camConf->height <= SCREEN_HEIGHT) ? camConf->height : SCREEN_HEIGHT;
+  *frame_width = PRIVACY_FRAME_WIDTH;
+  *frame_height = PRIVACY_FRAME_HEIGHT;
 
-#if ASPECT_RATIO_MODE == ASPECT_RATIO_FULLSCREEN
-  lcd_bg_width = (((camConf->width*lcd_bg_height)/camConf->height) - ((camConf->width*lcd_bg_height)/camConf->height) % 16);
-#else
-  lcd_bg_width = (camConf->height <= SCREEN_HEIGHT) ? camConf->height : SCREEN_HEIGHT;
-#endif
-
-  *bg_width = lcd_bg_width;
-  *bg_height = lcd_bg_height;
-
-  dcmipp_conf.output_width = lcd_bg_width;
-  dcmipp_conf.output_height = lcd_bg_height;
+  dcmipp_conf.output_width = PRIVACY_FRAME_WIDTH;
+  dcmipp_conf.output_height = PRIVACY_FRAME_HEIGHT;
   dcmipp_conf.output_format = DCMIPP_PIXEL_PACKER_FORMAT_RGB565_1;
   dcmipp_conf.output_bpp = 2;
-  dcmipp_conf.mode = aspect_ratio;
+  dcmipp_conf.mode = CMW_Aspect_ratio_manual_roi;
+  dcmipp_conf.manual_conf.width = square_size;
+  dcmipp_conf.manual_conf.height = height_in_square;
+  dcmipp_conf.manual_conf.offset_x = square_x;
+  dcmipp_conf.manual_conf.offset_y = square_y + y_in_square;
   dcmipp_conf.enable_gamma_conversion = 0;
   uint32_t pitch;
   ret = CMW_CAMERA_SetPipeConfig(DCMIPP_PIPE1, &dcmipp_conf, &pitch);
@@ -110,11 +114,11 @@ static void DCMIPP_PipeInitNn(uint32_t *pitch)
 
 /**
 * @brief Init the camera and the 2 DCMIPP pipes
-* @param lcd_bg_width display width
-* @param lcd_bg_height display height
+* @param frame_width sanitized frame width
+* @param frame_height sanitized frame height
 * @param pitch_nn output pitch computed by the CMW
 */
-void CameraPipeline_Init(uint32_t *lcd_bg_width, uint32_t *lcd_bg_height, uint32_t *pitch_nn)
+void CameraPipeline_Init(uint32_t *frame_width, uint32_t *frame_height, uint32_t *pitch_nn)
 {
   int ret;
   CMW_CameraInit_t cam_conf;
@@ -126,8 +130,14 @@ void CameraPipeline_Init(uint32_t *lcd_bg_width, uint32_t *lcd_bg_height, uint32
 
   ret = CMW_CAMERA_Init(&cam_conf, NULL);
   assert(ret == CMW_ERROR_NONE);
-  DCMIPP_PipeInitDisplay(&cam_conf, lcd_bg_width, lcd_bg_height);
+  DCMIPP_PipeInitDisplay(&cam_conf, frame_width, frame_height);
   DCMIPP_PipeInitNn(pitch_nn);
+}
+
+CameraPipeline_FrameWindow CameraPipeline_GetFrameWindow(void)
+{
+  assert(frame_window.square_size != 0U);
+  return frame_window;
 }
 
 void CameraPipeline_DeInit(void)

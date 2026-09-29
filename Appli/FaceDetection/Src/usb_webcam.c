@@ -5,32 +5,25 @@
 
 #include "stm32n6xx_hal.h"
 #include <tk/tkernel.h>
+#include <tm/tmonitor.h>
 #include "uvcl.h"
+#include "usb_webcam_venc.h"
 
 #define USB_WEBCAM_BUFFER_COUNT (2U)
 #define USB_WEBCAM_SERVICE_PRIORITY (8)
 #define USB_WEBCAM_SERVICE_STACK_SIZE (8U * 1024U)
-#define USB_WEBCAM_ENCODE_TIMEOUT_MS (100U)
-
-__attribute__((section(".psram_bss")))
-__attribute__((aligned(32)))
-static uint8_t webcam_mcu_buffer[USB_WEBCAM_MCU_SIZE];
 
 __attribute__((section(".psram_bss")))
 __attribute__((aligned(32)))
 static uint8_t webcam_buffers[USB_WEBCAM_BUFFER_COUNT][USB_WEBCAM_JPEG_MAX_SIZE];
-
-static JPEG_HandleTypeDef webcam_jpeg;
-static uint32_t webcam_jpeg_length;
-static uint32_t webcam_jpeg_chunks;
 
 static volatile bool webcam_buffer_busy[USB_WEBCAM_BUFFER_COUNT];
 static volatile bool webcam_streaming;
 static volatile uint32_t webcam_submitted_frames;
 static volatile uint32_t webcam_dropped_frames;
 static volatile uint32_t webcam_last_jpeg_bytes;
-static volatile uint32_t webcam_maximum_convert_us;
 static volatile uint32_t webcam_maximum_encode_us;
+static volatile UsbWebcam_DropCounts webcam_drops;
 static UVCL_Callbacks_t webcam_callbacks;
 static ID webcam_irq_sem_id;
 
@@ -60,6 +53,7 @@ static void webcam_streaming_active(UVCL_Callbacks_t *callbacks,
   (void)callbacks;
   (void)stream;
   webcam_streaming = true;
+  webcam_drops.stream_starts++;
 }
 
 static void webcam_streaming_inactive(UVCL_Callbacks_t *callbacks)
@@ -88,61 +82,6 @@ static uint32_t webcam_cycles_to_us(uint32_t cycles)
   return cycles / cycles_per_us;
 }
 
-static void webcam_jpeg_init(void)
-{
-  webcam_jpeg.Instance = JPEG;
-  assert(HAL_JPEG_Init(&webcam_jpeg) == HAL_OK);
-
-  const JPEG_ConfTypeDef configuration = {
-    .ColorSpace = JPEG_YCBCR_COLORSPACE,
-    .ChromaSubsampling = JPEG_422_SUBSAMPLING,
-    .ImageHeight = USB_WEBCAM_HEIGHT,
-    .ImageWidth = USB_WEBCAM_WIDTH,
-    .ImageQuality = USB_WEBCAM_JPEG_QUALITY,
-  };
-  assert(HAL_JPEG_ConfigEncoding(&webcam_jpeg, &configuration) == HAL_OK);
-}
-
-/* Returns the encoded length, or 0 when the frame did not fit. */
-static uint32_t webcam_jpeg_encode(uint8_t *destination)
-{
-  webcam_jpeg_length = 0U;
-  webcam_jpeg_chunks = 0U;
-  if (HAL_JPEG_Encode(&webcam_jpeg, webcam_mcu_buffer, USB_WEBCAM_MCU_SIZE,
-                      destination, USB_WEBCAM_JPEG_MAX_SIZE,
-                      USB_WEBCAM_ENCODE_TIMEOUT_MS) != HAL_OK)
-  {
-    /* A failed polling encode leaves the core running and the pause state
-     * set, so reset the peripheral before the next frame. */
-    assert(HAL_JPEG_DeInit(&webcam_jpeg) == HAL_OK);
-    webcam_jpeg_init();
-    return 0U;
-  }
-  /* A full output buffer is reported as an extra chunk and then reused. */
-  if (webcam_jpeg_chunks != 1U || webcam_jpeg_length >= USB_WEBCAM_JPEG_MAX_SIZE)
-  {
-    return 0U;
-  }
-  return webcam_jpeg_length;
-}
-
-/* The whole frame is passed as one input buffer. Without pausing here the
- * HAL would feed the same MCUs again once they are consumed. */
-void HAL_JPEG_GetDataCallback(JPEG_HandleTypeDef *hjpeg, uint32_t NbDecodedData)
-{
-  (void)NbDecodedData;
-  (void)HAL_JPEG_Pause(hjpeg, JPEG_PAUSE_RESUME_INPUT);
-}
-
-void HAL_JPEG_DataReadyCallback(JPEG_HandleTypeDef *hjpeg, uint8_t *pDataOut,
-                                uint32_t OutDataLength)
-{
-  (void)hjpeg;
-  (void)pDataOut;
-  webcam_jpeg_length = OutDataLength;
-  webcam_jpeg_chunks++;
-}
-
 void UsbWebcam_Init(void)
 {
   const T_CSEM irq_sem_config = {
@@ -154,7 +93,8 @@ void UsbWebcam_Init(void)
   webcam_irq_sem_id = tk_cre_sem(&irq_sem_config);
   assert(webcam_irq_sem_id > 0);
 
-  webcam_jpeg_init();
+  UsbWebcamVenc_Init(USB_WEBCAM_WIDTH, USB_WEBCAM_HEIGHT,
+                     USB_WEBCAM_JPEG_QUALITY);
 
   UVCL_Conf_t configuration = {0};
   configuration.streams[0].payload_type = UVCL_PAYLOAD_JPEG;
@@ -182,9 +122,12 @@ void UsbWebcam_IRQHandler(void)
   (void)tk_sig_sem(webcam_irq_sem_id, 1);
 }
 
-bool UsbWebcam_SubmitRgb565(const uint16_t *source,
-                            uint32_t source_width,
-                            uint32_t source_height)
+void UsbWebcam_VencIRQHandler(void)
+{
+  UsbWebcamVenc_IRQHandler();
+}
+
+bool UsbWebcam_SubmitRgb565(const uint16_t *frame)
 {
   if (!webcam_streaming)
   {
@@ -203,23 +146,14 @@ bool UsbWebcam_SubmitRgb565(const uint16_t *source,
   if (index == USB_WEBCAM_BUFFER_COUNT)
   {
     webcam_dropped_frames++;
+    webcam_drops.busy++;
     return false;
   }
 
-  const uint32_t convert_started = DWT->CYCCNT;
-  UsbWebcam_ConvertRgb565ToYcbcr422Mcu(source, source_width, source_height,
-                                       webcam_mcu_buffer, USB_WEBCAM_WIDTH,
-                                       USB_WEBCAM_HEIGHT);
   const uint32_t encode_started = DWT->CYCCNT;
-  const uint32_t length = webcam_jpeg_encode(webcam_buffers[index]);
-  const uint32_t encode_finished = DWT->CYCCNT;
-
-  const uint32_t convert_us = webcam_cycles_to_us(encode_started - convert_started);
-  const uint32_t encode_us = webcam_cycles_to_us(encode_finished - encode_started);
-  if (convert_us > webcam_maximum_convert_us)
-  {
-    webcam_maximum_convert_us = convert_us;
-  }
+  const uint32_t length = UsbWebcamVenc_Encode(frame, webcam_buffers[index],
+                                               USB_WEBCAM_JPEG_MAX_SIZE);
+  const uint32_t encode_us = webcam_cycles_to_us(DWT->CYCCNT - encode_started);
   if (encode_us > webcam_maximum_encode_us)
   {
     webcam_maximum_encode_us = encode_us;
@@ -229,15 +163,17 @@ bool UsbWebcam_SubmitRgb565(const uint16_t *source,
   {
     webcam_buffer_busy[index] = false;
     webcam_dropped_frames++;
+    webcam_drops.encode++;
+    webcam_drops.last_encode_error = UsbWebcamVenc_LastError();
     return false;
   }
   webcam_last_jpeg_bytes = length;
 
-  SCB_CleanDCache_by_Addr(webcam_buffers[index], (int32_t)length);
   if (UVCL_ShowFrame(webcam_buffers[index], (int)length) != 0)
   {
     webcam_buffer_busy[index] = false;
     webcam_dropped_frames++;
+    webcam_drops.show++;
     return false;
   }
 
@@ -260,29 +196,77 @@ uint32_t UsbWebcam_LastJpegBytes(void)
   return webcam_last_jpeg_bytes;
 }
 
-uint32_t UsbWebcam_MaximumConvertUs(void)
-{
-  return webcam_maximum_convert_us;
-}
-
 uint32_t UsbWebcam_MaximumEncodeUs(void)
 {
   return webcam_maximum_encode_us;
 }
 
+/* TEMPORARY diagnostic for the VENC bus errors seen on hardware: encodes the
+ * same frame into PSRAM and into AXISRAM2 (unused by the NN) and reports how
+ * often each fails. The AXISRAM2 JPEG is not cache-coherent and is thrown
+ * away; only the error counts matter. */
+#define USB_WEBCAM_SELFTEST_RUNS (16U)
+#define USB_WEBCAM_SELFTEST_AXISRAM2 ((uint8_t *)0x34100000UL)
+
+static void webcam_selftest_run(const uint16_t *frame, uint8_t *destination,
+                                const char *label, const char *target)
+{
+  uint32_t ok = 0U;
+  uint32_t total_us = 0U;
+  int32_t last_error = 0;
+  for (uint32_t i = 0U; i < USB_WEBCAM_SELFTEST_RUNS; i++)
+  {
+    const uint32_t started = DWT->CYCCNT;
+    const uint32_t length = UsbWebcamVenc_Encode(frame, destination,
+                                                 USB_WEBCAM_JPEG_MAX_SIZE);
+    total_us += webcam_cycles_to_us(DWT->CYCCNT - started);
+    if (length != 0U)
+    {
+      ok++;
+    }
+    else
+    {
+      last_error = UsbWebcamVenc_LastError();
+    }
+  }
+  tm_printf((UB *)"VENC selftest [%s] out=%s: ok=%u/%u last_error=%d avg=%uus.\n",
+            label, target, ok, USB_WEBCAM_SELFTEST_RUNS, (int)last_error,
+            total_us / USB_WEBCAM_SELFTEST_RUNS);
+}
+
+void UsbWebcam_SelfTest(const uint16_t *frame, const char *label)
+{
+  __HAL_RCC_AXISRAM2_MEM_CLK_ENABLE();
+  webcam_selftest_run(frame, webcam_buffers[0], label, "psram");
+  webcam_selftest_run(frame, USB_WEBCAM_SELFTEST_AXISRAM2, label, "axisram2");
+}
+
+int32_t UsbWebcam_SelfTestEncodeOnce(const uint16_t *frame, bool to_axisram2)
+{
+  __HAL_RCC_AXISRAM2_MEM_CLK_ENABLE();
+  uint8_t *destination = to_axisram2 ? USB_WEBCAM_SELFTEST_AXISRAM2
+                                     : webcam_buffers[0];
+  if (UsbWebcamVenc_Encode(frame, destination, USB_WEBCAM_JPEG_MAX_SIZE) != 0U)
+  {
+    return 0;
+  }
+  return UsbWebcamVenc_LastError();
+}
+
+UsbWebcam_DropCounts UsbWebcam_GetDropCounts(void)
+{
+  UsbWebcam_DropCounts counts;
+  counts.stream_starts = webcam_drops.stream_starts;
+  counts.busy = webcam_drops.busy;
+  counts.encode = webcam_drops.encode;
+  counts.show = webcam_drops.show;
+  counts.last_encode_error = webcam_drops.last_encode_error;
+  return counts;
+}
+
 bool UsbWebcam_IsStreaming(void)
 {
   return webcam_streaming;
-}
-
-void HAL_JPEG_MspInit(JPEG_HandleTypeDef *hjpeg)
-{
-  assert(hjpeg->Instance == JPEG);
-
-  __HAL_RCC_JPEG_FORCE_RESET();
-  __HAL_RCC_JPEG_RELEASE_RESET();
-  __HAL_RCC_JPEG_CLK_ENABLE();
-  __HAL_RCC_JPEG_CLK_SLEEP_ENABLE();
 }
 
 void HAL_PCD_MspInit(PCD_HandleTypeDef *hpcd)

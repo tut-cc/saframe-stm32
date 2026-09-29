@@ -63,3 +63,16 @@
 - ライセンス: `Appli/FaceDetection/Vendor/UVC/uvcl/LICENSE`、
   `Appli/FaceDetection/Vendor/UVC/STM32_USB_Device_Library/LICENSE.md`、
   および各ソースファイルのライセンス表示を参照
+
+## Video Encoder (VENC) / EWL
+
+- 提供者: Verisilicon Inc.、Google Inc.（Video Encoder）、STMicroelectronics（EWL、LL VENC）
+- 取得元: STM32CubeN6 V1.3.0 の `Middlewares/Third_Party/VideoEncoder`、
+  `Middlewares/ST/VideoEncoder_EWL`（V1.2.1）、
+  `Drivers/STM32N6xx_HAL_Driver` の `stm32n6xx_ll_venc`
+- 使用範囲: JPEG 符号化（`inc/`、`source/common/`、`source/jpeg/`）と EWL。H.264 は含めない
+- ライセンス: Video Encoder は GPL-2.0 と BSD-3-Clause のデュアルライセンスで、
+  本プロジェクトは BSD-3-Clause の条件で使用する。
+  `Appli/FaceDetection/Vendor/VideoEncoder/LICENSE.txt`、
+  `Appli/FaceDetection/Vendor/VideoEncoder_EWL/LICENSE.txt`、
+  および各ファイルのライセンス表示を参照
