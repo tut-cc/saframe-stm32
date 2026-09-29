@@ -121,10 +121,12 @@ EXPORT ER knl_init_interrupt( void )
 {
 	/* Set Exception handler */
 	knl_exctbl[2]	= (UW)knl_nmi_handler;		/* 2: NMI Handler */
-	knl_exctbl[3]	= (UW)knl_hardfault_handler;	/* 3: Hard Fault Handler */
-	knl_exctbl[4]	= (UW)knl_memmanage_handler;	/* 4: MPU Fault Handler */
-	knl_exctbl[5]	= (UW)knl_busfault_handler;	/* 5: Bus Fault Handler */
-	knl_exctbl[6]	= (UW)knl_usagefault_handler;	/* 6: Usage Fault Handler */
+	/*
+	 * 3-6 (Hard/MPU/Bus/Usage Fault) keep the entries copied from the startup
+	 * vector table in knl_start_mtkernel(): the application handlers in
+	 * stm32n6xx_it.c, which save the fault into app_fault_record so it is
+	 * reported on the next boot. The knl_*fault_handler stubs only spin.
+	 */
 
 	knl_exctbl[11]	= (UW)knl_svcall_handler;	/* 11: Svcall */
 	knl_exctbl[12]	= (UW)knl_debugmon_handler;	/* 12: Debug Monitor Handler */
