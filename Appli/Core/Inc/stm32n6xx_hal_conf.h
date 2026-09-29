@@ -55,7 +55,7 @@ extern "C" {
 /*#define HAL_ICACHE_MODULE_ENABLED   */
 /*#define HAL_IRDA_MODULE_ENABLED   */
 /*#define HAL_IWDG_MODULE_ENABLED   */
-/*#define HAL_JPEG_MODULE_ENABLED   */
+#define HAL_JPEG_MODULE_ENABLED
 /*#define HAL_LPTIM_MODULE_ENABLED   */
 #define HAL_LTDC_MODULE_ENABLED
 /*#define HAL_MCE_MODULE_ENABLED   */
@@ -191,6 +191,7 @@ extern "C" {
 #define  USE_HAL_I3C_REGISTER_CALLBACKS       0U /* I3C register callback disabled       */
 #define  USE_HAL_IWDG_REGISTER_CALLBACKS      0U /* IWDG register callback disabled      */
 #define  USE_HAL_IRDA_REGISTER_CALLBACKS      0U /* IRDA register callback disabled      */
+#define  USE_HAL_JPEG_REGISTER_CALLBACKS      0U /* JPEG register callback disabled      */
 #define  USE_HAL_LPTIM_REGISTER_CALLBACKS     0U /* LPTIM register callback disabled     */
 #define  USE_HAL_LTDC_REGISTER_CALLBACKS      0U /* LTDC register callback disabled      */
 #define  USE_HAL_MCE_REGISTER_CALLBACKS       0U /* MCE register callback disabled       */

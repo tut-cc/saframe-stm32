@@ -260,8 +260,9 @@ void FaceDetection_Run(void)
   RegisterApplicationInterrupts();
   tm_putstring((UB *)"OD: application interrupts registered.\n");
   UsbWebcam_Init();
-  tm_printf((UB *)"UVC: USB1/CN18 ready; YUY2 %ux%u@%u fps.\n",
-            USB_WEBCAM_WIDTH, USB_WEBCAM_HEIGHT, USB_WEBCAM_FPS);
+  tm_printf((UB *)"UVC: USB1/CN18 ready; MJPEG %ux%u@%u fps quality=%u.\n",
+            USB_WEBCAM_WIDTH, USB_WEBCAM_HEIGHT, USB_WEBCAM_FPS,
+            USB_WEBCAM_JPEG_QUALITY);
 
   const bool weights_valid = NetworkWeightsValid();
   tm_printf((UB *)"OD: model weights at 0x%08x: %s.\n",
@@ -623,6 +624,7 @@ static void Security_Config(void)
   HAL_RIF_RIMC_ConfigMasterAttributes(RIF_MASTER_INDEX_OTG1, &RIMC_master);
   HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RISC_PERIPH_INDEX_NPU , RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV);
   HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RISC_PERIPH_INDEX_DMA2D , RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV);
+  HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RISC_PERIPH_INDEX_JPEG  , RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV);
   HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RISC_PERIPH_INDEX_CSI    , RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV);
   HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RISC_PERIPH_INDEX_DCMIPP , RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV);
   HAL_RIF_RISC_SetSlaveSecureAttributes(RIF_RISC_PERIPH_INDEX_LTDC   , RIF_ATTRIBUTE_SEC | RIF_ATTRIBUTE_PRIV);
@@ -1097,7 +1099,8 @@ static void ControlMonitorTask(INT stacd, void *exinf)
                          "captured_fps=%u.%u inferred_fps=%u.%u processed_fps=%u.%u published_fps=%u.%u "
                          "capture_q=%u/%u render_q=%u/%u backpressure_skips=%u warmup=%s "
                          "published=%u dropped=%u consecutive=%u max_consecutive=%u max_published_total=%uus "
-                         "uvc=%s uvc_submitted=%u uvc_dropped=%u.\n",
+                         "uvc=%s uvc_submitted=%u uvc_dropped=%u uvc_jpeg_bytes=%u "
+                         "uvc_convert_max=%uus uvc_encode_max=%uus.\n",
                   result.frame_number, PrivacyFilter_ModeName(result.applied_mode),
                   result.detection_count,
                   result.class_detection_count[PRIVACY_PROXY_FACE],
@@ -1121,7 +1124,9 @@ static void ControlMonitorTask(INT stacd, void *exinf)
                   result.consecutive_drops, privacy_maximum_consecutive_drops,
                   privacy_maximum_published_total_us,
                   UsbWebcam_IsStreaming() ? "streaming" : "idle",
-                  UsbWebcam_SubmittedFrames(), UsbWebcam_DroppedFrames());
+                  UsbWebcam_SubmittedFrames(), UsbWebcam_DroppedFrames(),
+                  UsbWebcam_LastJpegBytes(), UsbWebcam_MaximumConvertUs(),
+                  UsbWebcam_MaximumEncodeUs());
         previous_captured = captured;
         previous_inferred = inferred;
         previous_processed = processed;

@@ -10,15 +10,27 @@
 #define USB_WEBCAM_BUFFER_COUNT (2U)
 #define USB_WEBCAM_SERVICE_PRIORITY (8)
 #define USB_WEBCAM_SERVICE_STACK_SIZE (8U * 1024U)
+#define USB_WEBCAM_ENCODE_TIMEOUT_MS (100U)
 
 __attribute__((section(".psram_bss")))
 __attribute__((aligned(32)))
-static uint8_t webcam_buffers[USB_WEBCAM_BUFFER_COUNT][USB_WEBCAM_FRAME_SIZE];
+static uint8_t webcam_mcu_buffer[USB_WEBCAM_MCU_SIZE];
+
+__attribute__((section(".psram_bss")))
+__attribute__((aligned(32)))
+static uint8_t webcam_buffers[USB_WEBCAM_BUFFER_COUNT][USB_WEBCAM_JPEG_MAX_SIZE];
+
+static JPEG_HandleTypeDef webcam_jpeg;
+static uint32_t webcam_jpeg_length;
+static uint32_t webcam_jpeg_chunks;
 
 static volatile bool webcam_buffer_busy[USB_WEBCAM_BUFFER_COUNT];
 static volatile bool webcam_streaming;
 static volatile uint32_t webcam_submitted_frames;
 static volatile uint32_t webcam_dropped_frames;
+static volatile uint32_t webcam_last_jpeg_bytes;
+static volatile uint32_t webcam_maximum_convert_us;
+static volatile uint32_t webcam_maximum_encode_us;
 static UVCL_Callbacks_t webcam_callbacks;
 static ID webcam_irq_sem_id;
 
@@ -69,6 +81,68 @@ static void webcam_frame_release(UVCL_Callbacks_t *callbacks, void *frame)
   }
 }
 
+static uint32_t webcam_cycles_to_us(uint32_t cycles)
+{
+  const uint32_t cycles_per_us = SystemCoreClock / 1000000U;
+  assert(cycles_per_us != 0U);
+  return cycles / cycles_per_us;
+}
+
+static void webcam_jpeg_init(void)
+{
+  webcam_jpeg.Instance = JPEG;
+  assert(HAL_JPEG_Init(&webcam_jpeg) == HAL_OK);
+
+  const JPEG_ConfTypeDef configuration = {
+    .ColorSpace = JPEG_YCBCR_COLORSPACE,
+    .ChromaSubsampling = JPEG_422_SUBSAMPLING,
+    .ImageHeight = USB_WEBCAM_HEIGHT,
+    .ImageWidth = USB_WEBCAM_WIDTH,
+    .ImageQuality = USB_WEBCAM_JPEG_QUALITY,
+  };
+  assert(HAL_JPEG_ConfigEncoding(&webcam_jpeg, &configuration) == HAL_OK);
+}
+
+/* Returns the encoded length, or 0 when the frame did not fit. */
+static uint32_t webcam_jpeg_encode(uint8_t *destination)
+{
+  webcam_jpeg_length = 0U;
+  webcam_jpeg_chunks = 0U;
+  if (HAL_JPEG_Encode(&webcam_jpeg, webcam_mcu_buffer, USB_WEBCAM_MCU_SIZE,
+                      destination, USB_WEBCAM_JPEG_MAX_SIZE,
+                      USB_WEBCAM_ENCODE_TIMEOUT_MS) != HAL_OK)
+  {
+    /* A failed polling encode leaves the core running and the pause state
+     * set, so reset the peripheral before the next frame. */
+    assert(HAL_JPEG_DeInit(&webcam_jpeg) == HAL_OK);
+    webcam_jpeg_init();
+    return 0U;
+  }
+  /* A full output buffer is reported as an extra chunk and then reused. */
+  if (webcam_jpeg_chunks != 1U || webcam_jpeg_length >= USB_WEBCAM_JPEG_MAX_SIZE)
+  {
+    return 0U;
+  }
+  return webcam_jpeg_length;
+}
+
+/* The whole frame is passed as one input buffer. Without pausing here the
+ * HAL would feed the same MCUs again once they are consumed. */
+void HAL_JPEG_GetDataCallback(JPEG_HandleTypeDef *hjpeg, uint32_t NbDecodedData)
+{
+  (void)NbDecodedData;
+  (void)HAL_JPEG_Pause(hjpeg, JPEG_PAUSE_RESUME_INPUT);
+}
+
+void HAL_JPEG_DataReadyCallback(JPEG_HandleTypeDef *hjpeg, uint8_t *pDataOut,
+                                uint32_t OutDataLength)
+{
+  (void)hjpeg;
+  (void)pDataOut;
+  webcam_jpeg_length = OutDataLength;
+  webcam_jpeg_chunks++;
+}
+
 void UsbWebcam_Init(void)
 {
   const T_CSEM irq_sem_config = {
@@ -80,11 +154,14 @@ void UsbWebcam_Init(void)
   webcam_irq_sem_id = tk_cre_sem(&irq_sem_config);
   assert(webcam_irq_sem_id > 0);
 
+  webcam_jpeg_init();
+
   UVCL_Conf_t configuration = {0};
-  configuration.streams[0].payload_type = UVCL_PAYLOAD_UNCOMPRESSED_YUY2;
+  configuration.streams[0].payload_type = UVCL_PAYLOAD_JPEG;
   configuration.streams[0].width = (int)USB_WEBCAM_WIDTH;
   configuration.streams[0].height = (int)USB_WEBCAM_HEIGHT;
   configuration.streams[0].fps = (int)USB_WEBCAM_FPS;
+  configuration.streams[0].dwMaxVideoFrameSize = USB_WEBCAM_JPEG_MAX_SIZE;
   configuration.streams_nb = 1;
   configuration.is_immediate_mode = 0;
 
@@ -129,11 +206,35 @@ bool UsbWebcam_SubmitRgb565(const uint16_t *source,
     return false;
   }
 
-  UsbWebcam_ConvertRgb565ToYuy2(source, source_width, source_height,
-                                webcam_buffers[index], USB_WEBCAM_WIDTH,
-                                USB_WEBCAM_HEIGHT);
-  SCB_CleanDCache_by_Addr(webcam_buffers[index], USB_WEBCAM_FRAME_SIZE);
-  if (UVCL_ShowFrame(webcam_buffers[index], USB_WEBCAM_FRAME_SIZE) != 0)
+  const uint32_t convert_started = DWT->CYCCNT;
+  UsbWebcam_ConvertRgb565ToYcbcr422Mcu(source, source_width, source_height,
+                                       webcam_mcu_buffer, USB_WEBCAM_WIDTH,
+                                       USB_WEBCAM_HEIGHT);
+  const uint32_t encode_started = DWT->CYCCNT;
+  const uint32_t length = webcam_jpeg_encode(webcam_buffers[index]);
+  const uint32_t encode_finished = DWT->CYCCNT;
+
+  const uint32_t convert_us = webcam_cycles_to_us(encode_started - convert_started);
+  const uint32_t encode_us = webcam_cycles_to_us(encode_finished - encode_started);
+  if (convert_us > webcam_maximum_convert_us)
+  {
+    webcam_maximum_convert_us = convert_us;
+  }
+  if (encode_us > webcam_maximum_encode_us)
+  {
+    webcam_maximum_encode_us = encode_us;
+  }
+
+  if (length == 0U)
+  {
+    webcam_buffer_busy[index] = false;
+    webcam_dropped_frames++;
+    return false;
+  }
+  webcam_last_jpeg_bytes = length;
+
+  SCB_CleanDCache_by_Addr(webcam_buffers[index], (int32_t)length);
+  if (UVCL_ShowFrame(webcam_buffers[index], (int)length) != 0)
   {
     webcam_buffer_busy[index] = false;
     webcam_dropped_frames++;
@@ -154,9 +255,34 @@ uint32_t UsbWebcam_DroppedFrames(void)
   return webcam_dropped_frames;
 }
 
+uint32_t UsbWebcam_LastJpegBytes(void)
+{
+  return webcam_last_jpeg_bytes;
+}
+
+uint32_t UsbWebcam_MaximumConvertUs(void)
+{
+  return webcam_maximum_convert_us;
+}
+
+uint32_t UsbWebcam_MaximumEncodeUs(void)
+{
+  return webcam_maximum_encode_us;
+}
+
 bool UsbWebcam_IsStreaming(void)
 {
   return webcam_streaming;
+}
+
+void HAL_JPEG_MspInit(JPEG_HandleTypeDef *hjpeg)
+{
+  assert(hjpeg->Instance == JPEG);
+
+  __HAL_RCC_JPEG_FORCE_RESET();
+  __HAL_RCC_JPEG_RELEASE_RESET();
+  __HAL_RCC_JPEG_CLK_ENABLE();
+  __HAL_RCC_JPEG_CLK_SLEEP_ENABLE();
 }
 
 void HAL_PCD_MspInit(PCD_HandleTypeDef *hpcd)
