@@ -146,21 +146,25 @@ PRIVACY_TEST_RENDER_DELAY_MS=40
 切り替わらないことを確認できます。通常ビルドでは未定義、すなわち0 msです。
 
 安全化済みフレームはLCDに加えて、USB1 Type-CコネクタCN18からUVC Webカメラ
-として出力します。UVC形式は320 x 240、YUY2、10 fpsです。800 x 480のRGB565
-表示フレームの中央4:3領域を縮小してUSB専用二面バッファへ変換するため、USB送信中の
-バッファがDCMIPPに再利用されることはありません。ホストが未接続、ストリーミング
-停止中、またはUSB送信が追いつかない場合はUSBフレームだけを破棄し、LCDの公開
-処理は継続します。RAWフレームをUSBへ渡す経路はありません。
+として出力します。UVC形式は320 x 240、MJPEG（品質75）、10 fpsです。800 x 480の
+RGB565表示フレームの中央4:3領域を縮小してYCbCr 4:2:2のMCU列へ変換し、
+ハードウェアJPEGコーデックのポーリングモードでUSB専用二面バッファへ
+エンコードします。そのため、USB送信中のバッファがDCMIPPに再利用されることは
+ありません。ホストが未接続、ストリーミング停止中、USB送信が追いつかない場合、
+またはエンコード結果が76,800バイトの上限を超えた場合はUSBフレームだけを破棄し、
+LCDの公開処理は継続します。RAWフレームをUSBへ渡す経路はありません。
 
 USBのHAL/UVC処理は割込み内ではなく、LCDのRender/Captureより低い優先度の専用
 タスクで行います。USBホストがストリーミングを開始してもLCD更新を優先します。
 
 CN18とホストをUSB Type-Cケーブルで接続し、OSのカメラアプリから`STM32 uvc`
 デバイスを選択してください。T-Monitorの`uvc=streaming`、`uvc_submitted`、
-`uvc_dropped`で接続状態と送信状況を確認できます。実機でUSB列挙、10 fps映像、
-LCD更新との同時動作を確認済みです。長時間連続動作は未確認です。HD 1280 x 720、
-letterbox、MJPEG/H.264、および実際の顔・
-書類・ロゴを学習したモデルは後続のマイルストーンです。
+`uvc_dropped`で接続状態と送信状況を、`uvc_jpeg_bytes`で直近のJPEGサイズを、
+`uvc_convert_max`と`uvc_encode_max`でMCU変換とJPEGエンコードの最大時間を
+確認できます。YUY2版では実機でUSB列挙、10 fps映像、LCD更新との同時動作を
+確認済みです。MJPEG版の実機確認と長時間連続動作は未確認です。HD 1280 x 720、
+30 fps、letterbox、H.264、および実際の顔・書類・ロゴを学習したモデルは後続の
+マイルストーンです。
 
 ホスト上のプライバシーフィルタ境界テストは次で実行できます。
 
@@ -171,7 +175,7 @@ cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
 ASAN_OPTIONS=detect_leaks=0 /tmp/privacy_filter_test
 ```
 
-RGB565からYUY2への変換と中央クロップは次でホスト試験できます。
+RGB565からYCbCr 4:2:2 MCUへの変換と中央クロップは次でホスト試験できます。
 
 ```bash
 cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
