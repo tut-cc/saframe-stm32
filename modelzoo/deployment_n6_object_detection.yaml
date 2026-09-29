@@ -1,0 +1,46 @@
+operation_mode: deployment
+
+model:
+  # Set MODEL_PATH to a quantized TFLite or ONNX QDQ model.
+  # For YOLOv8/YOLOv11/YOLO26, change model_type to the matching value.
+  model_path: ${oc.env:MODEL_PATH}
+  model_type: st_yoloxn
+
+dataset:
+  # Model output order. Keep this in sync with the filtered COCO dataset and
+  # the proxy labels in privacy_filter.c.
+  class_names: [person, book, stop sign]
+
+preprocessing:
+  resizing:
+    aspect_ratio: crop
+    interpolation: nearest
+  color_mode: rgb
+
+postprocessing:
+  confidence_thresh: 0.6
+  NMS_thresh: 0.5
+  IoU_eval_thresh: 0.5
+  max_detection_boxes: 10
+
+tools:
+  stedgeai:
+    optimization: balanced
+    on_cloud: false
+    path_to_stedgeai: ${oc.env:STEDGEAI_PATH}
+  path_to_cubeIDE: ${oc.env:CUBEIDE_PATH}
+
+deployment:
+  c_project_path: ${oc.env:MODELZOO_SERVICES_ROOT}/application_code/object_detection/STM32N6/
+  IDE: GCC
+  verbosity: 1
+  hardware_setup:
+    serie: STM32N6
+    board: STM32N6570-DK
+
+mlflow:
+  uri: ./tf/src/experiments_outputs/mlruns
+
+hydra:
+  run:
+    dir: ./tf/src/experiments_outputs/${now:%Y_%m_%d_%H_%M_%S}
