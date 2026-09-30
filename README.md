@@ -7,6 +7,45 @@ Saframe は、カメラに映った人物を隠し終えてから映像を外へ
 
 TRON プログラミングコンテスト 2026、RTOS アプリケーション部門の学生部門への応募作品です。
 
+## リリース
+
+ビルド済みイメージは [GitHub Releases](https://github.com/tut-cc/saframe-stm32/releases) から
+`saframe-v1.0.zip` をダウンロードしてください。ソースコードは同じバージョンの
+[`v1.0` タグ](https://github.com/tut-cc/saframe-stm32/tree/v1.0) に固定されています。
+
+ZIPには次のファイルが入っています。
+
+| ファイル | 用途 |
+| --- | --- |
+| `mtk3bsp2_stm32n657_Appli.elf` / `.bin` | μT-KernelとSaframe本体を含むAppli |
+| `mtk3bsp2_stm32n657_FSBL.elf` / `.bin` | dev-boot用のFSBL |
+| `network_data.hex` | STM32CubeProgrammerで外部NORへ書き込むモデル重み |
+| `network_data.xSPI2.bin` | モデル重みの生バイナリ |
+
+### v1.0を書き込んで起動する
+
+このリリースはDevelopment modeで使うdev-boot専用です。flash-boot用の署名済み
+イメージではありません。
+
+1. ボードをDevelopment modeにして、ST-LINK USBをパソコンへ接続します。
+2. ZIPを展開し、モデル重みを外部NORへ書き込みます。`STM32N6_LOADER`は
+   STM32CubeProgrammerに付属する外部ローダーの実際のパスへ置き換えてください。
+
+   ```bash
+   export STM32N6_LOADER="<STM32CubeProgrammer>/bin/ExternalLoader/MX66UW1G45G_STM32N6570-DK.stldr"
+   STM32_Programmer_CLI -c port=SWD mode=HOTPLUG -el "$STM32N6_LOADER" -hardRst \
+     -w network_data.hex
+   ```
+
+3. `v1.0`タグのソースをSTM32CubeIDEへインポートし、展開したAppli/FSBLの
+   `.elf`をそれぞれ`Appli/Debug/`と`FSBL/Debug/`へ置きます。
+4. `Appli/mtk3bsp2_stm32n657_Appli Debug.launch`を開始します。このlaunch構成が
+   FSBLとAppliを内部SRAMへロードしてFSBLから起動します。
+5. `usermain`で停止したら実行を再開します。T-Monitorコンソールは
+   115200 bps、8-N-1です。
+
+ソースから再ビルドする場合は、次の「ビルドと実行」の手順を使ってください。
+
 ## 特長
 
 - **ボード内で完結**
