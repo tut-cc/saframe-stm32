@@ -1,4 +1,4 @@
-# SAFRAME — STM32 Model Zoo物体検出
+# Saframe — STM32 Model Zoo物体検出
 
 STM32N6570-DK上のμT-Kernel 3.0 BSP2で、カメラ画像をNeural-ARTへ入力し、
 検出したperson領域をLCD上でマスクまたはモザイク化します。
@@ -17,8 +17,17 @@ COCOの `person / book / stop sign` を代理的に
 - NPUランタイム: STAI tools 4.0.1、LL_ATON 1.1.3-dev275、
   NetworkRuntime 12.0.1（生成物と同じSTEdgeAI配布物一式）
 - 後処理: confidence 0.6、NMS 0.5、最大10件
-- 入出力: IMX335カメラ、STM32N6570-DK LCD
-- 実行: Vision、Render、Control/Monitorの3つのμT-Kernelタスク
+- 入出力: IMX335カメラ、STM32N6570-DK LCD、USB1/CN18のH.264 UVC
+- 実行: 次の6つのμT-Kernelタスク。優先度は数値が小さいほど高い
+
+| タスク | 優先度 | 役割 |
+| --- | ---: | --- |
+| Render | 3 | MASK/MOSAIC、33 ms期限判定、LCD公開。USB用縮小コピーの間だけ6へ下げる |
+| Capture | 4 | DCMIPP Pipe 1とPipe 2のフレームを組にして後段へ渡す |
+| Inference | 5 | NN入力コピー、NPU推論、後処理。`usermain`のタスク |
+| USB encoder | 7 | VENCでH.264へエンコードする |
+| USB service | 8 | USB割込み後のHAL/UVC処理 |
+| Control/Monitor | 12 | B2の切り替えと、1秒ごとのT-Monitor出力 |
 
 既存のカメラ、LCD、Neural-ARTランタイム、dev-boot構成は維持し、BlazeFaceの
 モデル生成物と後処理だけをModel Zooの物体検出構成へ置き換えています。
@@ -110,22 +119,37 @@ YOLOv11、YOLO26は同じ`POSTPROCESS_OD_YOLO_V8_UI`経路を使うため、対�
 この構成を選んだ理由、棄却した方式、保証する状態遷移は
 [ADR 0006](docs/adr/0006-publish-only-sanitized-frames.md)に記録しています。
 
-LCD背景はRGB565四重バッファで管理します。DCMIPPは非公開の作業バッファへ
-snapshot取得し、AI推論とマスク／モザイク処理が完了したフレームだけをVBlankで
-表示バッファへ切り替えます。処理開始から33 msを超えたフレームは破棄され、LCDは
-直前の安全化済みフレームを保持します。最初の安全化済みフレームが完成するまでは
-黒画面です。
+LCD背景はRGB565の5面バッファ、NN入力はPSRAM上の3面ステージングで管理します。
+DCMIPPはPipe 1とPipe 2を連続モードで30 fps動かし、VSYNC割込みで次のフレームの
+書き込み先を非公開の作業バッファへ切り替えます。空きバッファがないフレームは捨て用の
+バッファへ書き込んで破棄します。Pipe 1とPipe 2の完了時刻の差が半フレーム以内の
+ものだけを同じフレームとして組み、組めなかったフレームも破棄します。
+
+推論とマスク／モザイク処理が完了したフレームだけを、VBlankで表示バッファへ
+切り替えます。期限の起点は、2本目のpipeのフレーム完了割込みで読んだDWT cycle
+counterの値です。そこから33 msを超えたフレームは破棄し、LCDは直前の安全化済み
+フレームを保持します。最初の安全化済みフレームが完成するまでは黒画面です。
 
 起動時はセンサーを安定して開始するため、Pipe 1で非公開バッファへ最初のsnapshotを
-1枚取得して破棄します。その後にPipe 1とPipe 2のsnapshot取得を開始します。タイム
+1枚取得して破棄し、その後にPipe 1とPipe 2の連続取り込みを開始します。タイム
 アウト時のT-Monitor出力にはPipe別の完了回数を表示するため、どちらの経路で停止した
-かを判別できます。
+かを判別できます。IMX335への設定書き込みがI2C NACKで失敗した場合は3回まで
+再試行し、それでも失敗したときは停止せずに次のフレームで設定し直します。
 
-T-Monitorには1秒ごとにcapture、AI、後処理、Vision、キャッシュinvalidate、
-MASK/MOSAIC本体、キャッシュclean、Render、合計、LTDC更新、VBlank待ちの時間を
-マイクロ秒単位で出力します。監視値は処理中ではなく最後に完了したフレームの値です。
-公開・破棄フレーム数も同じ行へ出力します。期限判定はDWT cycle counterを使用して
-33,000 usで判定します。
+T-Monitorには1秒ごとに`OD:`行を出力します。時間はマイクロ秒単位で、処理中では
+なく最後に完了したフレームの値です。
+
+| 項目 | 意味 |
+| --- | --- |
+| `capture`、`capture_lag`、`capture_wait` | 取り込み時間、完了割込みからCaptureタスクが受け取るまで、キューでの待ち |
+| `copy`、`ai`、`pp` | NN入力コピー、NPU推論、後処理 |
+| `filter`、`render`、`total` | MASK/MOSAIC本体、Render全体、期限判定の対象となる合計 |
+| `overlay`、`usb_submit`、`isp` | 状態表示の描画、USB用縮小コピー、ISP更新 |
+| `captured_fps` から `published_fps` | 各段の1秒あたりの処理数 |
+| `published`、`dropped`、`max_consecutive`、`max_published_total` | 公開数、期限超過で破棄した数、最大連続破棄数、公開したフレームの最大`total` |
+| `capture_drops`、`unpaired` | 空きバッファ不足で捨てた数、Pipe 1/Pipe 2が組めずに捨てた数 |
+| `isp_errors`、`sensor_retries`、`sensor_failures` | ISPとセンサー設定の失敗と再試行 |
+| `uvc`、`uvc_encoded_fps`、`uvc_repeated` | USBの状態、H.264のエンコード数、直前の画像を再送した数 |
 
 HardFault、MemManage、BusFault、UsageFaultまたはアプリケーションassertが発生した
 場合は、障害種別、処理段階、フレーム番号、PC/LR/SP、CFSR/HFSR/MMFAR/BFARを
@@ -152,14 +176,16 @@ PRIVACY_TEST_RENDER_DELAY_MS=40
 
 安全化済みフレームはLCDに加えて、USB1 Type-CコネクタCN18からH.264専用UVC
 Webカメラとして出力します。形式は320 x 240、30 fps、約1 Mbps VBR、GOP 30です。
-Renderタスクは800 x 480 RGB565表示フレームの中央640 x 480を2画素おきにUSB専用
-二面入力へコピーし、別のVENCタスクが33/33/34 ms周期でエンコードします。新しい
-安全化画像がない周期は直近の安全画像を再利用し、最初の安全化完了前は黒画像を
-送ります。RAWフレーム、期限超過画像、モデル不正時の画像へ切り替わる経路は
-ありません。
+Renderタスクは、LCDへ公開した800 x 480 RGB565表示フレームの中央640 x 480を
+2画素おきにUSB専用二面入力へコピーします。このコピーはホストがストリーミング中の
+ときだけ行い、その間はRenderタスクの優先度を推論より低い6へ下げます。VENCタスクは
+新しい入力が届くたびにエンコードし、50 ms以内に届かなければ直近の安全画像を
+再エンコードします。最初の安全化完了前は黒画像を送ります。RAWフレーム、
+期限超過画像、モデル不正時の画像へ切り替わる経路はありません。
 
-USBのHAL/UVC処理は割込み内ではなく、LCDのRender/Captureより低い優先度の専用
-タスクで行います。USBホストがストリーミングを開始してもLCD更新を優先します。
+USBのHAL/UVC処理は割込み内ではなく、優先度8の専用タスクで行います。VENCタスクは
+優先度7です。どちらもLCDのRender/Capture、推論より低い優先度のため、USBホストが
+ストリーミングを開始してもLCD更新を優先します。
 
 CN18とホストをUSB Type-Cケーブルで接続し、LinuxではVLC/guvcview、Windowsでは
 FFmpeg `ffplay`を使用してください。T-Monitorでは`uvc_encoded_fps`、
@@ -186,7 +212,27 @@ cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
 ASAN_OPTIONS=detect_leaks=0 /tmp/usb_webcam_conversion_test
 ```
 
+連続取り込みのバッファ切り替え、Pipe 1/Pipe 2の組み合わせ、期限の起点は次で
+ホスト試験できます。
+
+```bash
+cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
+  -IAppli/FaceDetection/Inc tests/camera_capture_stream_test.c \
+  Appli/FaceDetection/Src/camera_capture_stream.c \
+  Appli/FaceDetection/Src/privacy_filter.c -o /tmp/camera_capture_stream_test
+ASAN_OPTIONS=detect_leaks=0 /tmp/camera_capture_stream_test
+```
+
+Capture、Inference、Renderの間のキューは次で試験できます。
+
+```bash
+cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
+  -IAppli/FaceDetection/Inc tests/privacy_pipeline_queue_test.c \
+  -o /tmp/privacy_pipeline_queue_test
+ASAN_OPTIONS=detect_leaks=0 /tmp/privacy_pipeline_queue_test
+```
+
 480 x 480モデルでは推論約28.5 ms、NNコピーを含む合計約35 msとなり、33 ms期限を
 超えることを実機で確認しました。現在の320 x 320モデルはこの結果を受けて選定した
-もので、モデル選定理由と受入条件は[ADR 0007](docs/adr/0007-select-st-yolox-320-person.md)に
-記録しています。320版の実機性能は新しい重みを書き込んだ後に再測定します。
+もので、実機での推論時間は約13.3 msです。モデル選定理由と受入条件は
+[ADR 0007](docs/adr/0007-select-st-yolox-320-person.md)に記録しています。
