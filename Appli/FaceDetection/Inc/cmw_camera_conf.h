@@ -43,6 +43,12 @@ extern "C" {
   */
 #define USE_IMX335_SENSOR
 
+/* The IMX335 occasionally NACKs a register write while streaming; retry it
+ * instead of failing the ISP background process. */
+int32_t CameraPipeline_SensorWriteReg16(uint16_t DevAddr, uint16_t Reg,
+                                        uint8_t *pData, uint16_t Length);
+#define CMW_I2C_WRITEREG16 CameraPipeline_SensorWriteReg16
+
 #ifdef __cplusplus
 }
 #endif

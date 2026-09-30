@@ -76,7 +76,10 @@ extern "C" {
   #define CMW_I2C_INIT BSP_I2C1_Init
   #define CMW_I2C_DEINIT BSP_I2C1_DeInit
   #define CMW_I2C_READREG16 BSP_I2C1_ReadReg16
+  /* saframe: the application may supply its own write (see cmw_camera_conf.h). */
+  #ifndef CMW_I2C_WRITEREG16
   #define CMW_I2C_WRITEREG16 BSP_I2C1_WriteReg16
+  #endif
 #endif /* STM32N6570_NUCLEO_REV */
 
 #define CSI2_CLK_ENABLE()               __HAL_RCC_CSI_CLK_ENABLE()

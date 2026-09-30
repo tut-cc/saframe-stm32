@@ -1293,6 +1293,8 @@ static void ControlMonitorTask(INT stacd, void *exinf)
       const uint32_t capture_unpaired = capture_stream.unpaired_halves;
       const uint32_t capture_sync_errors = capture_stream.sync_errors;
       EI(intsts);
+      CameraPipelineIspDiagnostics isp_diagnostics;
+      CameraPipeline_GetIspDiagnostics(&isp_diagnostics);
       if (result_valid)
       {
         const uint32_t elapsed_ms = now - last_log_at;
@@ -1310,7 +1312,8 @@ static void ControlMonitorTask(INT stacd, void *exinf)
                          "vision=%uus inv=%uus filter=%uus clean=%uus render=%uus total=%uus "
                          "ltdc=%uus vblank=%uus buffer_wait=%uus infer_wait=%uus render_wait=%uus "
                          "captured_fps=%u.%u inferred_fps=%u.%u processed_fps=%u.%u published_fps=%u.%u "
-                         "capture_q=%u/%u render_q=%u/%u capture_drops=%u unpaired=%u sync_errors=%u warmup=%s "
+                         "capture_q=%u/%u render_q=%u/%u capture_drops=%u unpaired=%u sync_errors=%u "
+                         "isp_errors=%u isp_last=%d sensor_retries=%u sensor_failures=%u warmup=%s "
                          "published=%u dropped=%u consecutive=%u max_consecutive=%u max_published_total=%uus "
                          "uvc=%s uvc_encoded_fps=%u.%u uvc_repeated=%u "
                          "uvc_encode_dropped=%u uvc_last_bytes=%u uvc_encode_max_us=%u "
@@ -1334,6 +1337,9 @@ static void ControlMonitorTask(INT stacd, void *exinf)
                   capture_queue_depth, capture_queue_maximum_depth,
                   queue_depth, queue_maximum_depth,
                   capture_drops, capture_unpaired, capture_sync_errors,
+                  isp_diagnostics.isp_errors, isp_diagnostics.isp_last_error,
+                  isp_diagnostics.sensor_write_retries,
+                  isp_diagnostics.sensor_write_failures,
                   privacy_warmup_complete ? "done" : "active",
                   result.published_frames, result.dropped_deadline,
                   result.consecutive_drops, privacy_maximum_consecutive_drops,
