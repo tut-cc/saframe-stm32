@@ -106,7 +106,7 @@ STM32N6570-DK の実機で、T-Monitor に 1 秒ごとに出る計測値を集�
 | `Appli/` | μT-Kernel とアプリケーション本体のイメージ |
 | `Appli/FaceDetection/` | カメラ、推論、公開ゲート、USB 出力のソースとモデル |
 | `FSBL/` | ボード起動時に最初に動くブートローダ |
-| `modelzoo/` | STM32 AI Model Zoo でモデルを生成するための設定と、モデルの検査条件 |
+| `modelzoo/` | STM32 AI Model Zoo で現行モデルを生成するための設定と、モデルの検査条件 |
 | `tools/` | モデルの取り込みと検査、推論ランタイムの同期、学習用のスクリプト |
 | `tests/` | パソコン上で動く試験 |
 | `docs/adr/` | 設計判断の記録 |
@@ -117,7 +117,6 @@ STM32N6570-DK の実機で、T-Monitor に 1 秒ごとに出る計測値を集�
 - [README_OBJECT_DETECTION.md](README_OBJECT_DETECTION.md): 詳しい構成、モデルの差し替え手順、T-Monitor の計測項目
 - [docs/adr/](docs/adr/): 設計判断の記録。特に 0006 公開ゲート、0007 モデルの選定、0008 USB 出力
 - [CONTEXT.md](CONTEXT.md): このリポジトリで使う用語
-- [modelzoo/README_PROXY_3CLASS.md](modelzoo/README_PROXY_3CLASS.md): 顔・書類・ロゴの 3 クラスに向けた学習手順（未完成）
 
 ## ライセンス
 

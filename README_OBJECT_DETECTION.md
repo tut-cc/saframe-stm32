@@ -3,11 +3,6 @@
 STM32N6570-DK上のμT-Kernel 3.0 BSP2で、カメラ画像をNeural-ARTへ入力し、
 検出したperson領域をLCD上でマスクまたはモザイク化します。
 
-COCOの `person / book / stop sign` を代理的に
-`FACE / DOCUMENT / LOGO` として扱う320 x 320・3クラス版の学習・統合経路は
-[modelzoo/README_PROXY_3CLASS.md](modelzoo/README_PROXY_3CLASS.md)にあります。
-代理名はモデルの意味を変更するものではありません。
-
 ## 現在の固定構成
 
 - モデル: ST-YOLOX nano `d033_w025`、320 x 320、UINT8入力／INT8出力、person 1クラス
@@ -97,15 +92,14 @@ tools/sync_stedgeai_runtime.sh "<STEdgeAI>/Middlewares/ST/AI"
 
 ```bash
 tools/import_modelzoo_object_detection.sh \
-  --contract modelzoo/st_yoloxn_person_320.json \
   "$MODELZOO_SERVICES_ROOT/application_code/object_detection/STM32N6"
 ```
 
 importスクリプトは指定した契約ファイルに従って入力形状、入出力型、クラス数と順序、
 後処理、出力テンソルに加え、生成コードとLL_ATON、STAI、静的ランタイムの世代を
 検査します。不一致な生成物は既存モデルを上書きする前に拒否し、新しい重みの実行時
-署名も自動生成します。`--contract`を省略した場合は、将来用の
-代理3クラス契約`modelzoo/st_yoloxn_proxy3_320.json`を使用します。
+署名も自動生成します。既定では現在のperson 1クラス契約
+`modelzoo/st_yoloxn_person_320.json`を使用します。
 
 YOLOv8を使う場合はYAMLの`model_type`を`yolov8n`へ変更します。YOLOv8、
 YOLOv11、YOLO26は同じ`POSTPROCESS_OD_YOLO_V8_UI`経路を使うため、対応する
@@ -228,6 +222,7 @@ Capture、Inference、Renderの間のキューは次で試験できます。
 ```bash
 cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
   -IAppli/FaceDetection/Inc tests/privacy_pipeline_queue_test.c \
+  Appli/FaceDetection/Src/privacy_filter.c \
   -o /tmp/privacy_pipeline_queue_test
 ASAN_OPTIONS=detect_leaks=0 /tmp/privacy_pipeline_queue_test
 ```
