@@ -1296,11 +1296,16 @@ static void PrivacyRenderTask(INT stacd, void *exinf)
     result.consecutive_drops = privacy_consecutive_drops;
     assert(tk_unl_mtx(privacy_display_mutex_id) == E_OK);
 
-    if (publish)
+    /* The 320x240 downsample reads the published buffer from PSRAM at render
+     * priority; skip it while no host is streaming. */
+    const uint32_t usb_submit_started_cycles = PerformanceCounter_Now();
+    if (publish && UsbWebcam_IsStreaming())
     {
       (void)UsbWebcam_SubmitRgb565((const uint16_t *)working_buffer,
                                    lcd_bg_area.XSize, lcd_bg_area.YSize);
     }
+    result.usb_submit_us = PerformanceCounter_ToUs(
+        PerformanceCounter_Now() - usb_submit_started_cycles);
 
     assert(tk_loc_mtx(privacy_result_mutex_id, TMO_FEVR) == E_OK);
     if (publish)
@@ -1391,7 +1396,7 @@ static void ControlMonitorTask(INT stacd, void *exinf)
         const uint32_t uvc_encoded_fps10 = ((uvc_encoded - previous_uvc_encoded) * 10000U) / elapsed_ms;
         tm_printf((UB *)"OD: frame=%u mode=%s detections=%u face=%u document=%u logo=%u capture=%uus capture_lag=%uus capture_wait=%uus copy=%uus ai=%uus pp=%uus "
                          "vision=%uus inv=%uus filter=%uus clean=%uus render=%uus total=%uus "
-                         "overlay=%uus isp=%uus ltdc=%uus vblank=%uus buffer_wait=%uus infer_wait=%uus render_wait=%uus "
+                         "overlay=%uus usb_submit=%uus isp=%uus ltdc=%uus vblank=%uus buffer_wait=%uus infer_wait=%uus render_wait=%uus "
                          "captured_fps=%u.%u inferred_fps=%u.%u processed_fps=%u.%u published_fps=%u.%u "
                          "capture_q=%u/%u render_q=%u/%u capture_drops=%u unpaired=%u sync_errors=%u "
                          "isp_errors=%u isp_last=%d sensor_retries=%u sensor_failures=%u warmup=%s "
@@ -1409,7 +1414,7 @@ static void ControlMonitorTask(INT stacd, void *exinf)
                   result.nn_copy_us, result.inference_us,
                   result.postprocess_us, result.vision_us,
                   result.cache_invalidate_us, result.filter_us, result.cache_clean_us,
-                  result.render_us, result.total_us, result.overlay_us, capture_isp_us,
+                  result.render_us, result.total_us, result.overlay_us, result.usb_submit_us, capture_isp_us,
                   result.ltdc_us, result.vblank_us,
                   result.buffer_wait_us, result.inference_wait_us, result.render_wait_us,
                   captured_fps10 / 10U, captured_fps10 % 10U,
