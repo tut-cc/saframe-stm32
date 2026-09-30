@@ -99,7 +99,7 @@ void UsbH264Encoder_Init(uint32_t width, uint32_t height, uint32_t fps,
 
   H264EncCodingCtrl coding;
   assert(H264EncGetCodingCtrl(venc_instance, &coding) == H264ENC_OK);
-  /* SPS/PPS are cached below and explicitly prepended on stream (re)sync. */
+  /* SPS/PPS are cached below and explicitly prepended on every IDR. */
   coding.idrHeader = 0U;
   assert(H264EncSetCodingCtrl(venc_instance, &coding) == H264ENC_OK);
 
@@ -143,8 +143,11 @@ int32_t UsbH264Encoder_Encode(const uint16_t *input, uint8_t *output,
   {
   }
 
+  venc_last_was_idr = force_idr || ((venc_picture_count % venc_gop_length) == 0U);
+
+  /* Repeat SPS/PPS on every IDR so a host that missed the first frame can resync. */
   size_t prefix_length = 0U;
-  if (prepend_headers)
+  if (prepend_headers || venc_last_was_idr)
   {
     if (venc_headers_length > output_capacity)
     {
@@ -160,7 +163,6 @@ int32_t UsbH264Encoder_Encode(const uint16_t *input, uint8_t *output,
   enc_input.pOutBuf = (u32 *)(output + prefix_length);
   enc_input.busOutBuf = (ptr_t)(output + prefix_length);
   enc_input.outBufSize = output_capacity - prefix_length;
-  venc_last_was_idr = force_idr || ((venc_picture_count % venc_gop_length) == 0U);
   enc_input.codingType = venc_last_was_idr
                            ? H264ENC_INTRA_FRAME : H264ENC_PREDICTED_FRAME;
   enc_input.timeIncrement = 1U;
