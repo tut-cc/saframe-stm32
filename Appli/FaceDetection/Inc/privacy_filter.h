@@ -68,7 +68,6 @@ typedef struct
   uint32_t render_us;
   uint32_t total_us;
   uint32_t overlay_us;
-  uint32_t usb_submit_us;
   uint32_t ltdc_us;
   uint32_t vblank_us;
   uint32_t published_frames;

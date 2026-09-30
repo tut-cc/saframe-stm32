@@ -62,6 +62,9 @@
 /* Fallback re-check of LTDC_SRCR.VBR should the reload interrupt be missed. */
 #define LTDC_RELOAD_POLL_MS      (20U)
 #define LTDC_RELOADED            (1U << 0)
+/* Below the inference task (5, Application/usermain.c), above the USB
+ * encoder task (7) that consumes the downsampled frame. */
+#define RENDER_USB_SUBMIT_PRIORITY (6)
 #define BUTTON_DEBOUNCE_MS       (200U)
 
 _Static_assert(NB_CLASSES <= PRIVACY_PROXY_CLASS_COUNT,
@@ -162,6 +165,7 @@ static int lcd_fg_buffer_rd_idx;
  * cleared once at start and after Display_Status drew elsewhere on it. */
 static bool lcd_fg_needs_full_clear[2] = { true, true };
 static volatile uint32_t capture_isp_us;
+static volatile uint32_t render_usb_submit_us;
 
 static ID privacy_result_mutex_id;
 static ID privacy_display_mutex_id;
@@ -1296,17 +1300,6 @@ static void PrivacyRenderTask(INT stacd, void *exinf)
     result.consecutive_drops = privacy_consecutive_drops;
     assert(tk_unl_mtx(privacy_display_mutex_id) == E_OK);
 
-    /* The 320x240 downsample reads the published buffer from PSRAM at render
-     * priority; skip it while no host is streaming. */
-    const uint32_t usb_submit_started_cycles = PerformanceCounter_Now();
-    if (publish && UsbWebcam_IsStreaming())
-    {
-      (void)UsbWebcam_SubmitRgb565((const uint16_t *)working_buffer,
-                                   lcd_bg_area.XSize, lcd_bg_area.YSize);
-    }
-    result.usb_submit_us = PerformanceCounter_ToUs(
-        PerformanceCounter_Now() - usb_submit_started_cycles);
-
     assert(tk_loc_mtx(privacy_result_mutex_id, TMO_FEVR) == E_OK);
     if (publish)
     {
@@ -1323,6 +1316,22 @@ static void PrivacyRenderTask(INT stacd, void *exinf)
     privacy_completed_result_valid = true;
     assert(tk_unl_mtx(privacy_result_mutex_id) == E_OK);
     assert(tk_sig_sem(privacy_free_buffer_sem_id, 1) == E_OK);
+
+    /* The 320x240 USB downsample reads the published buffer from PSRAM for
+     * about 7 ms. Run it below the inference priority so it does not delay
+     * the next frame's NN copy and inference. The buffer stays DISPLAYED, and
+     * only this task releases it (at its next publish), so it cannot be
+     * recaptured meanwhile. No mutex is held here. */
+    const uint32_t usb_submit_started_cycles = PerformanceCounter_Now();
+    if (publish && UsbWebcam_IsStreaming())
+    {
+      assert(tk_chg_pri(TSK_SELF, RENDER_USB_SUBMIT_PRIORITY) == E_OK);
+      (void)UsbWebcam_SubmitRgb565((const uint16_t *)working_buffer,
+                                   lcd_bg_area.XSize, lcd_bg_area.YSize);
+      assert(tk_chg_pri(TSK_SELF, privacy_render_task_config.itskpri) == E_OK);
+    }
+    render_usb_submit_us = PerformanceCounter_ToUs(
+        PerformanceCounter_Now() - usb_submit_started_cycles);
   }
 }
 
@@ -1414,7 +1423,7 @@ static void ControlMonitorTask(INT stacd, void *exinf)
                   result.nn_copy_us, result.inference_us,
                   result.postprocess_us, result.vision_us,
                   result.cache_invalidate_us, result.filter_us, result.cache_clean_us,
-                  result.render_us, result.total_us, result.overlay_us, result.usb_submit_us, capture_isp_us,
+                  result.render_us, result.total_us, result.overlay_us, render_usb_submit_us, capture_isp_us,
                   result.ltdc_us, result.vblank_us,
                   result.buffer_wait_us, result.inference_wait_us, result.render_wait_us,
                   captured_fps10 / 10U, captured_fps10 % 10U,
