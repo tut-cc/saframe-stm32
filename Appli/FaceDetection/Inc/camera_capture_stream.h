@@ -90,7 +90,11 @@ uint32_t CaptureStream_ArmedCount(const CaptureStream *stream,
 /* Returns the buffer to program for the next frame, or CAPTURE_STREAM_NONE
  * when the pipe has not been started. */
 uint32_t CaptureStream_OnVsync(CaptureStream *stream, CaptureStreamPipe pipe);
-void CaptureStream_OnFrameEnd(CaptureStream *stream, CaptureStreamPipe pipe,
+/* Returns true when a sensor frame is settled (a pair was formed, including
+ * one written to scratch, or a half was given up), i.e. once per frame. The
+ * task is woken only then, so it takes the pair right after the second pipe
+ * finishes and still re-arms buffers while every frame goes to scratch. */
+bool CaptureStream_OnFrameEnd(CaptureStream *stream, CaptureStreamPipe pipe,
                               uint32_t cycles);
 bool CaptureStream_PopEvent(CaptureStream *stream, CaptureStreamEvent *event);
 

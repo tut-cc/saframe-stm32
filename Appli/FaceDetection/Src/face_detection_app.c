@@ -59,6 +59,9 @@
 #define PRIVACY_FRAME_DEADLINE_US (33000U)
 #define PRIVACY_ROI_MARGIN_PC    (15U)
 #define CONTROL_PERIOD_MS        (20U)
+/* Fallback re-check of LTDC_SRCR.VBR should the reload interrupt be missed. */
+#define LTDC_RELOAD_POLL_MS      (20U)
+#define LTDC_RELOADED            (1U << 0)
 #define BUTTON_DEBOUNCE_MS       (200U)
 
 _Static_assert(NB_CLASSES <= PRIVACY_PROXY_CLASS_COUNT,
@@ -218,6 +221,7 @@ static void PrivacyRenderTask(INT stacd, void *exinf);
 static void ControlMonitorTask(INT stacd, void *exinf);
 
 static ID camera_frame_flag_id;
+static ID ltdc_reload_flag_id;
 
 static void CSI_InterruptHandler(UINT intno);
 static void DCMIPP_InterruptHandler(UINT intno);
@@ -266,6 +270,8 @@ void FaceDetection_Run(void)
 
   camera_frame_flag_id = tk_cre_flg(&camera_frame_flag);
   assert(camera_frame_flag_id > 0);
+  ltdc_reload_flag_id = tk_cre_flg(&camera_frame_flag);
+  assert(ltdc_reload_flag_id > 0);
   const T_CMTX display_mutex = {
     .mtxatr = TA_INHERIT,
     .ceilpri = 0,
@@ -521,10 +527,12 @@ void FaceDetection_CameraFrameCallback(uint32_t pipe)
   }
   if (capture_stream_active)
   {
-    CaptureStream_OnFrameEnd(&capture_stream, CaptureStreamPipeOf(pipe),
-                             completed_cycles);
-    /* Wake the capture task every frame so that it re-arms free buffers. */
-    (void)tk_set_flg(camera_frame_flag_id, CAPTURE_FRAME_ENDED);
+    /* Wake the capture task once per sensor frame, after both pipes. */
+    if (CaptureStream_OnFrameEnd(&capture_stream, CaptureStreamPipeOf(pipe),
+                                 completed_cycles))
+    {
+      (void)tk_set_flg(camera_frame_flag_id, CAPTURE_FRAME_ENDED);
+    }
     return;
   }
   if (camera_frame_flag_id > 0)
@@ -574,6 +582,21 @@ static void VENC_InterruptHandler(UINT intno)
   UsbWebcam_Venc_IRQHandler();
 }
 
+static void LTDC_InterruptHandler(UINT intno)
+{
+  (void)intno;
+  HAL_LTDC_IRQHandler(&hlcd_ltdc);
+}
+
+void HAL_LTDC_ReloadEventCallback(LTDC_HandleTypeDef *hltdc)
+{
+  (void)hltdc;
+  if (ltdc_reload_flag_id > 0)
+  {
+    (void)tk_set_flg(ltdc_reload_flag_id, LTDC_RELOADED);
+  }
+}
+
 static void RegisterApplicationInterrupts(void)
 {
   const T_DINT csi_interrupt = {
@@ -596,12 +619,20 @@ static void RegisterApplicationInterrupts(void)
     .intatr = TA_HLNG,
     .inthdr = (FP)VENC_InterruptHandler,
   };
+  const T_DINT ltdc_interrupt = {
+    .intatr = TA_HLNG,
+    .inthdr = (FP)LTDC_InterruptHandler,
+  };
 
   assert(tk_def_int(CSI_IRQn, &csi_interrupt) == E_OK);
   assert(tk_def_int(DCMIPP_IRQn, &dcmipp_interrupt) == E_OK);
   assert(tk_def_int(NPU0_IRQn, &npu_interrupt) == E_OK);
   assert(tk_def_int(USB1_OTG_HS_IRQn, &usb1_interrupt) == E_OK);
   assert(tk_def_int(VENC_IRQn, &venc_interrupt) == E_OK);
+  /* Both LTDC global lines go to the HAL handler; the register reload event
+   * wakes the render task (see WaitForReload). */
+  assert(tk_def_int(LTDC_LO_IRQn, &ltdc_interrupt) == E_OK);
+  assert(tk_def_int(LTDC_UP_IRQn, &ltdc_interrupt) == E_OK);
 }
 
 static bool NetworkWeightsValid(void)
@@ -916,9 +947,6 @@ static void CaptureTask(INT stacd, void *exinf)
 
   while (1)
   {
-    CameraPipeline_IspUpdate();
-    ArmFreeCaptureBuffers();
-
     UINT frame_pattern;
     const ER ercd = tk_wai_flg(camera_frame_flag_id, CAPTURE_FRAME_ENDED,
                                TWF_ORW | TWF_BITCLR, &frame_pattern,
@@ -979,6 +1007,11 @@ static void CaptureTask(INT stacd, void *exinf)
       assert(tk_unl_mtx(privacy_result_mutex_id) == E_OK);
       assert(tk_sig_sem(privacy_capture_sem_id, 1) == E_OK);
     }
+
+    /* Hand the frame downstream before the ISP work (AEC/AWB and sensor I2C
+     * writes), which would otherwise delay the inference by milliseconds. */
+    ArmFreeCaptureBuffers();
+    CameraPipeline_IspUpdate();
   }
 }
 
@@ -1447,6 +1480,11 @@ static void LCD_init(void)
   UTIL_LCD_Clear(0x00000000);
   UTIL_LCD_SetFont(&Font20);
   UTIL_LCD_SetTextColor(UTIL_LCD_COLOR_WHITE);
+
+  HAL_NVIC_SetPriority(LTDC_LO_IRQn, 7U, 0U);
+  HAL_NVIC_SetPriority(LTDC_UP_IRQn, 7U, 0U);
+  HAL_NVIC_EnableIRQ(LTDC_LO_IRQn);
+  HAL_NVIC_EnableIRQ(LTDC_UP_IRQn);
 }
 
 static void PerformanceCounter_Init(void)
@@ -1493,11 +1531,16 @@ static void WaitForLayerReload(uint32_t layer_index)
 
 static void WaitForReload(void)
 {
+  /* tk_dly_tsk sleeps a whole 10 ms system tick, which held the render task
+   * 10-30 ms per frame. Sleep until the register reload interrupt instead; a
+   * stale event only causes one extra check of VBR. */
   const uint32_t started_at = HAL_GetTick();
   while ((hlcd_ltdc.Instance->SRCR & LTDC_SRCR_VBR) != 0U)
   {
     assert((HAL_GetTick() - started_at) < CAMERA_FRAME_TIMEOUT_MS);
-    (void)tk_dly_tsk(1U);
+    UINT pattern;
+    (void)tk_wai_flg(ltdc_reload_flag_id, LTDC_RELOADED, TWF_ORW | TWF_BITCLR,
+                     &pattern, LTDC_RELOAD_POLL_MS);
   }
 }
 

@@ -258,6 +258,31 @@ static void test_pair_window_handles_counter_wrap(void)
   assert(event.completed_cycles == 100U);
 }
 
+static void test_frame_end_reports_settled_frames_once(void)
+{
+  CaptureStream stream;
+  uint32_t next_rgb;
+  uint32_t next_nn;
+  start_stream(&stream, 1U, 0U);
+
+  /* Real pair: only the second pipe settles the frame. */
+  vsync_both(&stream, &next_rgb, &next_nn);
+  assert(!CaptureStream_OnFrameEnd(&stream, DISPLAY, 1000U));
+  assert(CaptureStream_OnFrameEnd(&stream, NN, 1100U));
+
+  /* Scratch pair: no event, but still reported so the task re-arms. */
+  vsync_both(&stream, &next_rgb, &next_nn);
+  assert(!CaptureStream_OnFrameEnd(&stream, NN, 1000U + FRAME_CYCLES));
+  assert(CaptureStream_OnFrameEnd(&stream, DISPLAY, 1100U + FRAME_CYCLES));
+  assert(stream.event_count == 1U);
+
+  /* A lone half given up when the next frame arrives. */
+  vsync_both(&stream, &next_rgb, &next_nn);
+  assert(!CaptureStream_OnFrameEnd(&stream, DISPLAY, 1000U + 2U * FRAME_CYCLES));
+  (void)CaptureStream_OnVsync(&stream, DISPLAY);
+  assert(CaptureStream_OnFrameEnd(&stream, DISPLAY, 1000U + 3U * FRAME_CYCLES));
+}
+
 int main(void)
 {
   test_steady_state_rotates_armed_buffers();
@@ -269,6 +294,7 @@ int main(void)
   test_arm_capacity_and_event_overflow();
   test_deadline_starts_at_frame_end_interrupt();
   test_pair_window_handles_counter_wrap();
+  test_frame_end_reports_settled_frames_once();
   puts("camera_capture_stream_test: PASS");
   return 0;
 }

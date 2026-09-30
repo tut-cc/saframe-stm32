@@ -149,19 +149,19 @@ uint32_t CaptureStream_OnVsync(CaptureStream *stream, CaptureStreamPipe pipe)
   return state->queued;
 }
 
-void CaptureStream_OnFrameEnd(CaptureStream *stream, CaptureStreamPipe pipe,
+bool CaptureStream_OnFrameEnd(CaptureStream *stream, CaptureStreamPipe pipe,
                               uint32_t cycles)
 {
   if ((stream == NULL) || !IsValidPipe(pipe))
   {
-    return;
+    return false;
   }
   CaptureStreamPipeState *state = &stream->pipes[pipe];
   const uint32_t done = state->writing;
   state->writing = CAPTURE_STREAM_NONE;
   if (done == CAPTURE_STREAM_NONE)
   {
-    return;
+    return false;
   }
 
   if (stream->pending_valid)
@@ -181,7 +181,7 @@ void CaptureStream_OnFrameEnd(CaptureStream *stream, CaptureStreamPipe pipe,
       };
       stream->pending_valid = false;
       PushEvent(stream, &event);
-      return;
+      return true;
     }
 
     /* The pending half belongs to a sensor frame the other pipe did not
@@ -189,12 +189,18 @@ void CaptureStream_OnFrameEnd(CaptureStream *stream, CaptureStreamPipe pipe,
     stream->unpaired_halves++;
     ReleaseHalf(stream, stream->pending_pipe, stream->pending_index,
                 stream->pending_cycles);
+    stream->pending_valid = true;
+    stream->pending_pipe = pipe;
+    stream->pending_index = done;
+    stream->pending_cycles = cycles;
+    return true;
   }
 
   stream->pending_valid = true;
   stream->pending_pipe = pipe;
   stream->pending_index = done;
   stream->pending_cycles = cycles;
+  return false;
 }
 
 bool CaptureStream_PopEvent(CaptureStream *stream, CaptureStreamEvent *event)
