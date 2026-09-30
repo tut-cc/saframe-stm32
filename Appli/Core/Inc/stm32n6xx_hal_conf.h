@@ -55,7 +55,7 @@ extern "C" {
 /*#define HAL_ICACHE_MODULE_ENABLED   */
 /*#define HAL_IRDA_MODULE_ENABLED   */
 /*#define HAL_IWDG_MODULE_ENABLED   */
-#define HAL_JPEG_MODULE_ENABLED
+/* JPEG is unused: USB video is encoded by VENC as H.264. */
 /*#define HAL_LPTIM_MODULE_ENABLED   */
 #define HAL_LTDC_MODULE_ENABLED
 /*#define HAL_MCE_MODULE_ENABLED   */

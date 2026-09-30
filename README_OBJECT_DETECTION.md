@@ -25,6 +25,11 @@ COCOの `person / book / stop sign` を代理的に
 `Appli/FaceDetection`というディレクトリ名は既存CubeIDEプロジェクトとの互換性の
 ため残しています。
 
+取り込んだ既存コード、著作権表示、固定バージョン、ライセンス条件は
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)に記録しています。VENC/H.264の
+取り込みパス、ローカル改変、参照のみのプログラムは
+[VENC source provenance](Appli/FaceDetection/Vendor/VENC/SOURCE.md)に分けて記録しています。
+
 ## ビルドと実行
 
 1. STM32CubeIDEへルート、Appli、FSBLの3プロジェクトをimportします。
@@ -145,26 +150,23 @@ PRIVACY_TEST_RENDER_DELAY_MS=40
 この定義では安全化処理へ40 msの試験遅延が入り、`dropped`が増えてLCD背景が
 切り替わらないことを確認できます。通常ビルドでは未定義、すなわち0 msです。
 
-安全化済みフレームはLCDに加えて、USB1 Type-CコネクタCN18からUVC Webカメラ
-として出力します。UVC形式は320 x 240、MJPEG（品質75）、10 fpsです。800 x 480の
-RGB565表示フレームの中央4:3領域を縮小してYCbCr 4:2:2のMCU列へ変換し、
-ハードウェアJPEGコーデックのポーリングモードでUSB専用二面バッファへ
-エンコードします。そのため、USB送信中のバッファがDCMIPPに再利用されることは
-ありません。ホストが未接続、ストリーミング停止中、USB送信が追いつかない場合、
-またはエンコード結果が76,800バイトの上限を超えた場合はUSBフレームだけを破棄し、
-LCDの公開処理は継続します。RAWフレームをUSBへ渡す経路はありません。
+安全化済みフレームはLCDに加えて、USB1 Type-CコネクタCN18からH.264専用UVC
+Webカメラとして出力します。形式は320 x 240、30 fps、約1 Mbps VBR、GOP 30です。
+Renderタスクは800 x 480 RGB565表示フレームの中央640 x 480を2画素おきにUSB専用
+二面入力へコピーし、別のVENCタスクが33/33/34 ms周期でエンコードします。新しい
+安全化画像がない周期は直近の安全画像を再利用し、最初の安全化完了前は黒画像を
+送ります。RAWフレーム、期限超過画像、モデル不正時の画像へ切り替わる経路は
+ありません。
 
 USBのHAL/UVC処理は割込み内ではなく、LCDのRender/Captureより低い優先度の専用
 タスクで行います。USBホストがストリーミングを開始してもLCD更新を優先します。
 
-CN18とホストをUSB Type-Cケーブルで接続し、OSのカメラアプリから`STM32 uvc`
-デバイスを選択してください。T-Monitorの`uvc=streaming`、`uvc_submitted`、
-`uvc_dropped`で接続状態と送信状況を、`uvc_jpeg_bytes`で直近のJPEGサイズを、
-`uvc_convert_max`と`uvc_encode_max`でMCU変換とJPEGエンコードの最大時間を
-確認できます。YUY2版では実機でUSB列挙、10 fps映像、LCD更新との同時動作を
-確認済みです。MJPEG版の実機確認と長時間連続動作は未確認です。HD 1280 x 720、
-30 fps、letterbox、H.264、および実際の顔・書類・ロゴを学習したモデルは後続の
-マイルストーンです。
+CN18とホストをUSB Type-Cケーブルで接続し、LinuxではVLC/guvcview、Windowsでは
+FFmpeg `ffplay`を使用してください。T-Monitorでは`uvc_encoded_fps`、
+`uvc_repeated`、`uvc_encode_dropped`、`uvc_last_bytes`、`uvc_encode_max_us`、
+`uvc_idr_count`を確認できます。USB出力を保持するホストアプリでは30 fps付近を維持し、
+推論・安全化の公開fpsが30未満なら`uvc_repeated`が増えます。Windows標準カメラなど
+MJPEGのみ対応するアプリ、1280 x 720、USBX、USB DMAは今回の対象外です。
 
 ホスト上のプライバシーフィルタ境界テストは次で実行できます。
 
@@ -175,7 +177,7 @@ cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
 ASAN_OPTIONS=detect_leaks=0 /tmp/privacy_filter_test
 ```
 
-RGB565からYCbCr 4:2:2 MCUへの変換と中央クロップは次でホスト試験できます。
+RGB565の中央640 x 480クロップと320 x 240への2画素間引きは、次でホスト試験できます。
 
 ```bash
 cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \

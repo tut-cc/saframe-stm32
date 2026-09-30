@@ -71,12 +71,15 @@ SECTIONS
     . = ALIGN(4);
   } >AXISRAM1_S
 
-  .noncacheable :
+  .noncacheable (NOLOAD) :
   {
-    . = ALIGN(8);
+    . = ALIGN(32);
     __snoncacheable = .;
+    __uncached_bss_start__ = .;
     KEEP(*(.noncacheable))
-    . = ALIGN(8);
+    KEEP(*(.uncached_bss))
+    . = ALIGN(32);
+    __uncached_bss_end__ = .;
     __enoncacheable = .;
   } >AXISRAM1_S
 

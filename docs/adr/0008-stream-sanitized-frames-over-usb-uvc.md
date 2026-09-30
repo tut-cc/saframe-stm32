@@ -1,52 +1,70 @@
-# 0008: 安全化済みフレームをUSB UVCへYUY2で出力する
+# 0008: 安全化済みフレームをH.264 UVCで30 fps出力する
 
-Status: accepted (2026-09-28)
+Status: accepted (2026-09-29、YUY2/MJPEG構成を置換)
 
 ## Context
 
-ADR-0006はRAWフレームを非公開にし、安全化済みフレームだけをLCDへ公開する。
-Webカメラ出力を追加しても、この公開境界をUSB側で迂回してはならない。また、LCD
-表示中のRGB565バッファをUSB転送完了まで共有すると、USBホストの停止や遅延が4面
-バッファの所有権を塞ぎ、Capture/Inference/Renderパイプラインを停止させ得る。
-
-ST公式のSTM32N6 UVC Library (`uvcl`) はUSBXまたはSTM32 USB Device Library、
-RTOSあり／なし、複数の映像形式を選択できる。RGB565 Frame-Based形式は変換不要
-だが一般的なWebカメラアプリとの互換性が低い。H.264とMJPEGは帯域を削減できるが、
-VENCまたはJPEG処理と追加の失敗経路を同時に導入する。
+ADR-0006の公開境界をUSBでも維持しながら、LCDと推論を止めずに公称30 fpsを
+提供する必要がある。CPUによる色変換とJPEG同期エンコードではRenderタスクの占有が
+大きく、実測は約10 fpsだった。STM32N6のVENCを利用するST公式サンプルはH.264を
+30 fpsで生成できるが、FreeRTOS/USBXをそのまま導入すると既存構成への変更が大きい。
 
 ## Decision
 
-USB1/CN18をUVCデバイスとして使用し、320 x 240、YUY2、10 fpsを1ストリーム公開
-する。`uvcl` v3.0.1をSTM32 USB Device Library v2.11.4、RTOSなし、USB DMAなし
-で使用する。
+USB1/CN18はH.264 Frame-Based UVC専用とし、320 x 240、30 fps、Annex-B、約1 Mbps
+VBR、GOP 30を公開する。VENC/H.264 API/EWL/LL VENCだけをST公式
+`x-cube-n6-ai-h264-usb-uvc`の固定コミットから移植し、μT-Kernelと既存のSTM32 USB
+Device Libraryを維持する。
 
-UVCへ渡すのは33 ms期限を満たしMASKまたはMOSAIC処理が完了したRGB565フレーム
-だけとする。800 x 480の中央4:3領域を320 x 240へ縮小しながらUSB専用YUY2二面
-バッファへコピー変換し、
-USB転送完了コールバックまでその面を再利用しない。USBが未接続、停止中、または
-二面とも使用中ならUSBフレームだけを破棄し、LCD公開とカメラパイプラインは止めない。
+Renderタスクは安全化とLCD公開が完了した800 x 480 RGB565画像の中央640 x 480を
+2画素おきにUSB専用320 x 240二面入力へコピーして直ちに戻る。VENC専用タスクは
+優先度7（Render/Captureより低くUSBサービスの優先度8より高い）で33/33/34 ms周期に
+動く。新しい安全画像がない周期は直近の安全画像を再エンコードする。起動時は黒画像
+を用い、RAW画像、期限超過画像、モデル不正時の画像へフォールバックしない。
+
+H.264出力も二面化する。ホストが両面を保持していればその周期を破棄し、次の成功
+フレームをIDRとする。接続・再接続時にも同じ再同期を行う。SPS/PPSはGOP周期の
+IDRを含む全IDRに前置する。WindowsのDirectShowなどでは受信開始直後のフレームが
+アプリへ届かないことがあり、開始時だけの前置ではデコーダが復帰できないためである。
 
 ## Consequences
 
-- USB用PSRAMを307,200 bytes追加使用する。
-- RGB565からYUY2へのCPU変換は安全期限判定とLCD VBlank公開後に行うため、その
-  フレームの33 ms判定値へは含めない。ただしRenderタスクを占有するため、実効fpsと
-  次フレームの待ち時間は実機測定する。
-- PCD割込みはμT-Kernelの`tk_def_int`で登録する。割込みハンドラではUSB IRQを
-  マスクしてセマフォを通知するだけとし、HAL/UVC処理は優先度8のサービス・タスク
-  で実行する。LCDのRender/Captureタスクはこれより高い優先度を維持する。
-- High-Speed Isochronous転送は1 microframeあたり1 transactionとし、古典USB
-  Device backendの無DMA構成で3 transactionを連続処理する負荷を避ける。
-- FSBLのUSB1 HCD初期化関数は実処理が空だが、AppliのPCD初期化時にUSB1を強制
-  リセットし、デバイス状態から開始する。
-- USB側にはRAW、期限超過、モデル重み不正、最初の安全化完了前のフレームを渡さない。
-- 30 fps、MJPEG、H.264、USB DMAは実機帯域とCPU負荷を測定した後の候補とする。
+- 入力307,200 bytes、VENC linear pool 4 MiBとsoftware pool 512 KiBをPSRAMに
+  追加する。VENCが書き込みUSB Device Libraryが読む最大出力262,144 bytesは、
+  公式サンプルと同様にMPUで非キャッシュ化した内蔵AXISRAM1へ配置する。
+- VENC、VENCRAMのクロック/RIFとVENC割込みを有効化する。EWLの完了待ちは
+  μT-Kernelセマフォへ接続する。
+- UVC出力30 fpsは異なるカメラ画像30枚/秒を意味しない。`published_fps`が低い場合は
+  `uvc_repeated`が増える。
+- 対応ホストはLinuxのVLC/guvcview、およびWindowsのFFmpeg `ffplay`に限定する。
+  MJPEGのみを扱うアプリは対象外とする。
 
 ## Verification
 
-- ホスト試験でRGB565→YUY2の原色変換と中央クロップを確認する。
-- Appli DebugビルドでUVC、USB Device Core、PCD/LL USBを含めてリンクする。
-- 実機でCN18の列挙、320 x 240 YUY2、10 fps、Windows/macOS/Linuxのカメラ
-  アプリ互換性、1,000フレーム以上の連続動作を確認する。
-- USB未接続、ホスト停止、再接続時にもLCD公開が継続し、RAW公開が0件であることを
-  確認する。
+- Debugビルドを警告増加なしで完了し、中央クロップ/縮小をホスト試験する。
+- Annex-B出力のSPS/PPS/IDR/Pフレームを`ffprobe`で確認する。
+- 実機10分試験で平均29.5 fps以上、1秒区間28 fps以上、USBバッファ枯渇0、LCD停止0、
+  Fault 0を確認する。
+- USB切断・再接続、MASK/MOSAIC、モデル不正、期限超過でRAWが公開されず、IDRから
+  再開することを確認する。
+
+## Post-implementation review
+
+2026-09-29にST公式資料と固定元の`v2.2.1`サンプルに対し、移植後の
+構成を再照合した。次の点は公式の推奨と一致する。
+
+- RGB565入力、frame mode、H.264 byte stream、picture/MB rate controlの利用。
+- カメラフレームとVENC参照バッファは外部PSRAM、H.264出力は非キャッシュの
+  内蔵SRAMに配置する。
+- VENC RIMC/RISC、クロック、LL VENC初期化、割り込み完了待ちをOSに接続する。
+- `UVCL_PAYLOAD_FB_H264`とimmediate modeを使い、`UVCL_ShowFrame()`後は
+  `frame_release`までバッファを再利用しない。
+
+公式サンプルとの意図的な差分は、FreeRTOS/USBXの代わりにμT-Kernel/
+STM32 USB Device Libraryを維持すること、およびSPS/PPSをエンコーダに自動挿入
+させず、キャッシュした値を全IDRへ明示的に前置することである。いずれも現行の
+EWL/UVCL APIの契約内である。
+
+2026-09-30、Windowsの`ffplay`で`non-existing PPS 0 referenced`が続き映像が
+出なかった。SPS/PPSを開始・再接続・ドロップ復帰時のIDRにしか付けておらず、
+その最初のフレームがアプリへ届かなかったためである。全IDRへの前置に改めた。
