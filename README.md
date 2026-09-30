@@ -33,9 +33,14 @@ ZIPには次のファイルが入っています。
 
    ```bash
    export STM32N6_LOADER="<STM32CubeProgrammer>/bin/ExternalLoader/MX66UW1G45G_STM32N6570-DK.stldr"
-   STM32_Programmer_CLI -c port=SWD mode=HOTPLUG -el "$STM32N6_LOADER" -hardRst \
-     -w network_data.hex
+   STM32_Programmer_CLI -c port=SWD freq=1000 mode=UR reset=HWrst -el "$STM32N6_LOADER" \
+     -w network_data.hex -hardRst
    ```
+
+   SWDを高速にしたり`mode=HOTPLUG`で接続したりすると、書き込み中にST-LINKのUSB通信が
+   止まる環境がありました。書き込みが終わったら、ST-LINKのUSBケーブルを抜き差しして
+   ボードの電源を入れ直してください。入れ直さずに起動すると外部NORを初期化できず、
+   モデル重みを読む時点でBusFaultになります。
 
 3. `v1.0`タグのソースをSTM32CubeIDEへインポートし、展開したAppli/FSBLの
    `.elf`をそれぞれ`Appli/Debug/`と`FSBL/Debug/`へ置きます。
@@ -119,9 +124,11 @@ STM32N6570-DK の実機で、T-Monitor に 1 秒ごとに出る計測値を集�
 
    ```bash
    export STM32N6_LOADER="<STM32CubeProgrammer>/bin/ExternalLoader/MX66UW1G45G_STM32N6570-DK.stldr"
-   STM32_Programmer_CLI -c port=SWD mode=HOTPLUG -el "$STM32N6_LOADER" -hardRst \
-     -w Appli/FaceDetection/Model/network_data.hex
+   STM32_Programmer_CLI -c port=SWD freq=1000 mode=UR reset=HWrst -el "$STM32N6_LOADER" \
+     -w Appli/FaceDetection/Model/network_data.hex -hardRst
    ```
+
+   書き込みが終わったら、ST-LINK の USB ケーブルを抜き差ししてボードの電源を入れ直します。理由は上の「v1.0を書き込んで起動する」を参照してください。
 
 4. `Appli/mtk3bsp2_stm32n657_Appli Debug.launch` でデバッグを開始し、`usermain` で止まったら実行を再開します。
 5. ST-LINK の仮想 COM ポートを 115200 bps、8-N-1 で開くと、T-Monitor に計測値が 1 秒ごとに出力されます。

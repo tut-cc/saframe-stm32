@@ -42,9 +42,13 @@ STM32N6570-DK上のμT-Kernel 3.0 BSP2で、カメラ画像をNeural-ARTへ入�
 
 ```bash
 export STM32N6_LOADER="<STM32CubeProgrammer>/bin/ExternalLoader/MX66UW1G45G_STM32N6570-DK.stldr"
-STM32_Programmer_CLI -c port=SWD mode=HOTPLUG -el "$STM32N6_LOADER" -hardRst \
-  -w Appli/FaceDetection/Model/network_data.hex
+STM32_Programmer_CLI -c port=SWD freq=1000 mode=UR reset=HWrst -el "$STM32N6_LOADER" \
+  -w Appli/FaceDetection/Model/network_data.hex -hardRst
 ```
+
+書き込み後はST-LINKのUSBケーブルを抜き差しして電源を入れ直します。外部ローダーで
+書き込んだ直後の状態ではAppliが外部NORを初期化できず、`NetworkWeightsValid()`で
+BusFaultになります。
 
 4. `Appli/mtk3bsp2_stm32n657_Appli Debug.launch`を開始し、`usermain`で停止後に
    Resumeします。T-Monitorコンソールは115200 bps、8-N-1です。
