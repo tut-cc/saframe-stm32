@@ -1,4 +1,4 @@
-<img width="4259" height="178" alt="image" src="https://github.com/user-attachments/assets/870fb301-2fc9-42f6-94d1-26aa13aef0f1" /># Saframe
+# Saframe
 
 **映った人を、必ず隠してから映す。**
 
