@@ -25,7 +25,7 @@ flowchart LR
     buf --> nn["物体検出<br/>ST-YOLOX を NPU で推論"]
     nn --> filt["黒塗り / モザイク"]
   end
-  filt --> gate{"公開ゲート<br/>33 ms 以内か"}
+  filt --> gate{"処理期限<br/>33 ms 以内か"}
   gate -- "間に合った" --> lcd["液晶画面 800×480"]
   gate -- "間に合った" --> usb["USB Web カメラ<br/>H.264 320×240 30 fps"]
   gate -- "超過" --> drop["破棄して<br/>直前のコマを表示"]
