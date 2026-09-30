@@ -158,6 +158,10 @@ __attribute__ ((section (".psram_bss")))
 __attribute__ ((aligned (32)))
 static uint8_t lcd_fg_buffer[2][LCD_FG_WIDTH * LCD_FG_HEIGHT * 2];
 static int lcd_fg_buffer_rd_idx;
+/* The render task redraws only the two status text rows; the whole layer is
+ * cleared once at start and after Display_Status drew elsewhere on it. */
+static bool lcd_fg_needs_full_clear[2] = { true, true };
+static volatile uint32_t capture_isp_us;
 
 static ID privacy_result_mutex_id;
 static ID privacy_display_mutex_id;
@@ -1011,7 +1015,10 @@ static void CaptureTask(INT stacd, void *exinf)
     /* Hand the frame downstream before the ISP work (AEC/AWB and sensor I2C
      * writes), which would otherwise delay the inference by milliseconds. */
     ArmFreeCaptureBuffers();
+    const uint32_t isp_started_cycles = PerformanceCounter_Now();
     CameraPipeline_IspUpdate();
+    capture_isp_us = PerformanceCounter_ToUs(
+        PerformanceCounter_Now() - isp_started_cycles);
   }
 }
 
@@ -1099,7 +1106,27 @@ static void Display_Status(const char *message, uint32_t color)
   assert(ret == HAL_OK);
   WaitForLayerReload(LTDC_LAYER_2);
   lcd_fg_buffer_rd_idx = 1 - lcd_fg_buffer_rd_idx;
+  lcd_fg_needs_full_clear[0] = true;
+  lcd_fg_needs_full_clear[1] = true;
   assert(tk_unl_mtx(privacy_display_mutex_id) == E_OK);
+}
+
+static uint8_t *OverlayTextRow(uint32_t line)
+{
+  const uint32_t row_bytes = LCD_FG_WIDTH * 2U;
+  return lcd_fg_buffer[lcd_fg_buffer_rd_idx] + (line * Font20.Height * row_bytes);
+}
+
+/* Clearing and cleaning the full 768 KB ARGB4444 layer in PSRAM took about
+ * 10 ms per frame at render priority, stalling capture and inference. */
+static void ClearOverlayTextRow(uint32_t line)
+{
+  memset(OverlayTextRow(line), 0, Font20.Height * LCD_FG_WIDTH * 2U);
+}
+
+static void CleanOverlayTextRow(uint32_t line)
+{
+  SCB_CleanDCache_by_Addr(OverlayTextRow(line), Font20.Height * LCD_FG_WIDTH * 2U);
 }
 
 static void PrivacyRenderTask(INT stacd, void *exinf)
@@ -1206,12 +1233,23 @@ static void PrivacyRenderTask(INT stacd, void *exinf)
       }
     }
 
-    PrivacyRenderTarget overlay_target = {
-      .overlay = (uint16_t *)lcd_fg_buffer[lcd_fg_buffer_rd_idx],
-      .overlay_width = LCD_FG_WIDTH,
-      .overlay_height = LCD_FG_HEIGHT,
-    };
-    PrivacyFilter_Clear(&overlay_target);
+    const uint32_t overlay_started_cycles = PerformanceCounter_Now();
+    const bool overlay_full = lcd_fg_needs_full_clear[lcd_fg_buffer_rd_idx];
+    if (overlay_full)
+    {
+      PrivacyRenderTarget overlay_target = {
+        .overlay = (uint16_t *)lcd_fg_buffer[lcd_fg_buffer_rd_idx],
+        .overlay_width = LCD_FG_WIDTH,
+        .overlay_height = LCD_FG_HEIGHT,
+      };
+      PrivacyFilter_Clear(&overlay_target);
+      lcd_fg_needs_full_clear[lcd_fg_buffer_rd_idx] = false;
+    }
+    else
+    {
+      ClearOverlayTextRow(1U);
+      ClearOverlayTextRow(20U);
+    }
 
     g_app_diagnostic_stage = APP_STAGE_LTDC_RELOAD;
     phase_started_cycles = PerformanceCounter_Now();
@@ -1231,8 +1269,18 @@ static void PrivacyRenderTask(INT stacd, void *exinf)
                        result.inference_us, result.total_us, privacy_dropped_deadline);
     UTIL_LCD_SetBackColor(0);
 
-    SCB_CleanDCache_by_Addr(lcd_fg_buffer[lcd_fg_buffer_rd_idx],
-                            LCD_FG_FRAMEBUFFER_SIZE);
+    if (overlay_full)
+    {
+      SCB_CleanDCache_by_Addr(lcd_fg_buffer[lcd_fg_buffer_rd_idx],
+                              LCD_FG_FRAMEBUFFER_SIZE);
+    }
+    else
+    {
+      CleanOverlayTextRow(1U);
+      CleanOverlayTextRow(20U);
+    }
+    result.overlay_us = PerformanceCounter_ToUs(
+        PerformanceCounter_Now() - overlay_started_cycles);
     phase_started_cycles = PerformanceCounter_Now();
     assert(HAL_LTDC_Reload(&hlcd_ltdc, LTDC_RELOAD_VERTICAL_BLANKING) == HAL_OK);
     ltdc_cycles += PerformanceCounter_Now() - phase_started_cycles;
@@ -1343,7 +1391,7 @@ static void ControlMonitorTask(INT stacd, void *exinf)
         const uint32_t uvc_encoded_fps10 = ((uvc_encoded - previous_uvc_encoded) * 10000U) / elapsed_ms;
         tm_printf((UB *)"OD: frame=%u mode=%s detections=%u face=%u document=%u logo=%u capture=%uus capture_lag=%uus capture_wait=%uus copy=%uus ai=%uus pp=%uus "
                          "vision=%uus inv=%uus filter=%uus clean=%uus render=%uus total=%uus "
-                         "ltdc=%uus vblank=%uus buffer_wait=%uus infer_wait=%uus render_wait=%uus "
+                         "overlay=%uus isp=%uus ltdc=%uus vblank=%uus buffer_wait=%uus infer_wait=%uus render_wait=%uus "
                          "captured_fps=%u.%u inferred_fps=%u.%u processed_fps=%u.%u published_fps=%u.%u "
                          "capture_q=%u/%u render_q=%u/%u capture_drops=%u unpaired=%u sync_errors=%u "
                          "isp_errors=%u isp_last=%d sensor_retries=%u sensor_failures=%u warmup=%s "
@@ -1361,7 +1409,8 @@ static void ControlMonitorTask(INT stacd, void *exinf)
                   result.nn_copy_us, result.inference_us,
                   result.postprocess_us, result.vision_us,
                   result.cache_invalidate_us, result.filter_us, result.cache_clean_us,
-                  result.render_us, result.total_us, result.ltdc_us, result.vblank_us,
+                  result.render_us, result.total_us, result.overlay_us, capture_isp_us,
+                  result.ltdc_us, result.vblank_us,
                   result.buffer_wait_us, result.inference_wait_us, result.render_wait_us,
                   captured_fps10 / 10U, captured_fps10 % 10U,
                   inferred_fps10 / 10U, inferred_fps10 % 10U,
