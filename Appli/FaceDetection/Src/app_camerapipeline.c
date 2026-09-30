@@ -137,19 +137,25 @@ void CameraPipeline_DeInit(void)
   assert(ret == CMW_ERROR_NONE);
 }
 
+static void StartPipe(uint32_t pipe, uint8_t *dst, uint32_t cam_mode)
+{
+  /* The HAL start ORs the mode into PxFCTCR.CPTMODE, so a pipe once started in
+   * snapshot mode would stay in snapshot mode. Set the mode field explicitly. */
+  HAL_StatusTypeDef hal_ret = HAL_DCMIPP_PIPE_SetCaptureMode(
+      CMW_CAMERA_GetDCMIPPHandle(), pipe, cam_mode);
+  assert(hal_ret == HAL_OK);
+  int ret = CMW_CAMERA_Start(pipe, dst, cam_mode);
+  assert(ret == CMW_ERROR_NONE);
+}
+
 void CameraPipeline_DisplayPipe_Start(uint8_t *display_pipe_dst, uint32_t cam_mode)
 {
-  int ret;
-  ret = CMW_CAMERA_Start(DCMIPP_PIPE1, display_pipe_dst, cam_mode);
-  assert(ret == CMW_ERROR_NONE);
+  StartPipe(DCMIPP_PIPE1, display_pipe_dst, cam_mode);
 }
 
 void CameraPipeline_NNPipe_Start(uint8_t *nn_pipe_dst, uint32_t cam_mode)
 {
-  int ret;
-
-  ret = CMW_CAMERA_Start(DCMIPP_PIPE2, nn_pipe_dst, cam_mode);
-  assert(ret == CMW_ERROR_NONE);
+  StartPipe(DCMIPP_PIPE2, nn_pipe_dst, cam_mode);
 }
 
 void CameraPipeline_DisplayPipe_Stop()
