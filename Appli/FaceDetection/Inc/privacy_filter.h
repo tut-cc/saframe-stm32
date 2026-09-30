@@ -53,6 +53,7 @@ typedef struct
   uint32_t deadline_started_cycles;
   uint32_t queued_at_cycles;
   uint32_t capture_us;
+  uint32_t capture_lag_us;
   uint32_t capture_queue_wait_us;
   uint32_t nn_copy_us;
   uint32_t buffer_wait_us;
@@ -66,6 +67,7 @@ typedef struct
   uint32_t cache_clean_us;
   uint32_t render_us;
   uint32_t total_us;
+  uint32_t overlay_us;
   uint32_t ltdc_us;
   uint32_t vblank_us;
   uint32_t published_frames;

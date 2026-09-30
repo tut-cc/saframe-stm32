@@ -481,6 +481,17 @@ bool PrivacyBufferPool_Drop(PrivacyBufferPool *pool, uint32_t buffer_index)
   return true;
 }
 
+bool PrivacyBufferPool_Cancel(PrivacyBufferPool *pool, uint32_t buffer_index)
+{
+  if ((pool == NULL) || (buffer_index >= PRIVACY_BACKGROUND_BUFFER_COUNT) ||
+      (pool->states[buffer_index] != PRIVACY_FRAME_CAPTURING))
+  {
+    return false;
+  }
+  pool->states[buffer_index] = PRIVACY_FRAME_FREE;
+  return true;
+}
+
 PrivacyFrameState PrivacyBufferPool_State(const PrivacyBufferPool *pool,
                                           uint32_t buffer_index)
 {
@@ -535,6 +546,17 @@ bool PrivacyNnBufferPool_Release(PrivacyNnBufferPool *pool, uint32_t buffer_inde
 {
   if ((pool == NULL) || (buffer_index >= PRIVACY_NN_BUFFER_COUNT) ||
       (pool->states[buffer_index] != PRIVACY_NN_BUFFER_COPYING))
+  {
+    return false;
+  }
+  pool->states[buffer_index] = PRIVACY_NN_BUFFER_FREE;
+  return true;
+}
+
+bool PrivacyNnBufferPool_Cancel(PrivacyNnBufferPool *pool, uint32_t buffer_index)
+{
+  if ((pool == NULL) || (buffer_index >= PRIVACY_NN_BUFFER_COUNT) ||
+      (pool->states[buffer_index] != PRIVACY_NN_BUFFER_CAPTURING))
   {
     return false;
   }

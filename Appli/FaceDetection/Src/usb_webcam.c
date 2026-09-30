@@ -12,6 +12,8 @@
 #define ENCODER_PRIORITY 7
 #define SERVICE_PRIORITY 8
 #define TASK_STACK_SIZE (8U * 1024U)
+/* Resend the last frame when none arrives for 1.5 frame periods. */
+#define ENCODER_REPEAT_TIMEOUT_MS (50U)
 
 typedef enum { INPUT_FREE, INPUT_WRITING, INPUT_READY, INPUT_ENCODING } InputState;
 
@@ -32,6 +34,7 @@ static volatile uint32_t encoded_frames, repeated_frames, encode_dropped;
 static volatile uint32_t last_bytes, maximum_encode_us, idr_count;
 static UVCL_Callbacks_t callbacks;
 static ID usb_irq_sem_id;
+static ID input_ready_sem_id;
 
 static uint32_t lock(void) { uint32_t key = __get_PRIMASK(); __disable_irq(); return key; }
 static void unlock(uint32_t key) { __set_PRIMASK(key); }
@@ -155,16 +158,17 @@ static void encode_once(uint32_t *previous_generation)
 static void encoder_task(INT stacd, void *exinf)
 {
   (void)stacd; (void)exinf;
-  static const uint8_t cadence[] = {33U, 33U, 34U};
-  uint32_t phase = 0, deadline = HAL_GetTick(), previous = UINT32_MAX;
+  uint32_t previous = UINT32_MAX;
   bool was_streaming = false;
   for (;;) {
     if (!streaming) { was_streaming = false; (void)tk_dly_tsk(10U); continue; }
-    if (!was_streaming) { phase = 0; deadline = HAL_GetTick(); previous = UINT32_MAX; was_streaming = true; }
+    if (!was_streaming) { previous = UINT32_MAX; was_streaming = true; }
+    /* Encode each published frame as it arrives. A fixed 33/33/34 ms cadence
+     * beat against the camera clock and the jittery downsample, repeating
+     * about 3 frames per second. Repeat only when no frame arrives in time. */
+    (void)tk_wai_sem(input_ready_sem_id, 1, ENCODER_REPEAT_TIMEOUT_MS);
+    if (!streaming) continue;
     encode_once(&previous);
-    deadline += cadence[phase]; phase = (phase + 1U) % 3U;
-    int32_t remaining = (int32_t)(deadline - HAL_GetTick());
-    if (remaining > 0) (void)tk_dly_tsk((RELTIM)remaining);
   }
 }
 
@@ -185,6 +189,7 @@ void UsbWebcam_Init(void)
   latest_input = 0; input_state[0] = INPUT_READY; input_state[1] = INPUT_FREE;
   const T_CSEM sem = {.sematr = TA_TFIFO, .isemcnt = 0, .maxsem = 1};
   usb_irq_sem_id = tk_cre_sem(&sem); assert(usb_irq_sem_id > 0);
+  input_ready_sem_id = tk_cre_sem(&sem); assert(input_ready_sem_id > 0);
   UsbH264Encoder_Init(USB_WEBCAM_WIDTH, USB_WEBCAM_HEIGHT, USB_WEBCAM_FPS, USB_WEBCAM_BITRATE);
   UVCL_Conf_t config = {0};
   config.streams[0].payload_type = UVCL_PAYLOAD_FB_H264;
@@ -231,6 +236,8 @@ bool UsbWebcam_SubmitRgb565(const uint16_t *source, uint32_t source_width, uint3
   input_generation[index] = ++next_input_generation;
   input_state[index] = INPUT_READY; latest_input = index;
   unlock(key);
+  /* maxsem is 1: an unconsumed signal already covers this newer frame. */
+  (void)tk_sig_sem(input_ready_sem_id, 1);
   return true;
 }
 

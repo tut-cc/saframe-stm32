@@ -18,6 +18,7 @@
 
 #include <assert.h>
 #include "cmw_camera.h"
+#include "isp_api.h"
 #include "app_camerapipeline.h"
 #include "app_config.h"
 #include "crop_img.h"
@@ -137,19 +138,25 @@ void CameraPipeline_DeInit(void)
   assert(ret == CMW_ERROR_NONE);
 }
 
+static void StartPipe(uint32_t pipe, uint8_t *dst, uint32_t cam_mode)
+{
+  /* The HAL start ORs the mode into PxFCTCR.CPTMODE, so a pipe once started in
+   * snapshot mode would stay in snapshot mode. Set the mode field explicitly. */
+  HAL_StatusTypeDef hal_ret = HAL_DCMIPP_PIPE_SetCaptureMode(
+      CMW_CAMERA_GetDCMIPPHandle(), pipe, cam_mode);
+  assert(hal_ret == HAL_OK);
+  int ret = CMW_CAMERA_Start(pipe, dst, cam_mode);
+  assert(ret == CMW_ERROR_NONE);
+}
+
 void CameraPipeline_DisplayPipe_Start(uint8_t *display_pipe_dst, uint32_t cam_mode)
 {
-  int ret;
-  ret = CMW_CAMERA_Start(DCMIPP_PIPE1, display_pipe_dst, cam_mode);
-  assert(ret == CMW_ERROR_NONE);
+  StartPipe(DCMIPP_PIPE1, display_pipe_dst, cam_mode);
 }
 
 void CameraPipeline_NNPipe_Start(uint8_t *nn_pipe_dst, uint32_t cam_mode)
 {
-  int ret;
-
-  ret = CMW_CAMERA_Start(DCMIPP_PIPE2, nn_pipe_dst, cam_mode);
-  assert(ret == CMW_ERROR_NONE);
+  StartPipe(DCMIPP_PIPE2, nn_pipe_dst, cam_mode);
 }
 
 void CameraPipeline_DisplayPipe_Stop()
@@ -159,11 +166,76 @@ void CameraPipeline_DisplayPipe_Stop()
   assert(ret == CMW_ERROR_NONE);
 }
 
+#define SENSOR_WRITE_ATTEMPTS (3U)
+
+static volatile uint32_t sensor_write_retries;
+static volatile uint32_t sensor_write_failures;
+static volatile uint32_t isp_errors;
+static volatile int32_t isp_last_error = ISP_OK;
+
+int32_t CameraPipeline_SensorWriteReg16(uint16_t DevAddr, uint16_t Reg,
+                                        uint8_t *pData, uint16_t Length)
+{
+  int32_t ret = BSP_ERROR_NONE;
+  for (uint32_t attempt = 0U; attempt < SENSOR_WRITE_ATTEMPTS; attempt++)
+  {
+    if (attempt > 0U)
+    {
+      sensor_write_retries++;
+    }
+    /* Rewriting the same register value is idempotent. */
+    ret = BSP_I2C1_WriteReg16(DevAddr, Reg, pData, Length);
+    if (ret == BSP_ERROR_NONE)
+    {
+      return ret;
+    }
+  }
+  sensor_write_failures++;
+  return ret;
+}
+
 void CameraPipeline_IspUpdate(void)
 {
-  int ret = CMW_ERROR_NONE;
-  ret = CMW_CAMERA_Run();
-  assert(ret == CMW_ERROR_NONE);
+  /* An ISP error means one exposure or gain update did not reach the sensor.
+   * The AEC recomputes and resends it on a later frame, so keep streaming and
+   * report the error through CameraPipeline_GetIspDiagnostics(). */
+  if (CMW_CAMERA_Run() != CMW_ERROR_NONE)
+  {
+    isp_errors++;
+    isp_last_error = (int32_t)ISP_GetStatus(NULL);
+  }
+}
+
+void CameraPipeline_GetIspDiagnostics(CameraPipelineIspDiagnostics *diagnostics)
+{
+  diagnostics->isp_errors = isp_errors;
+  diagnostics->isp_last_error = isp_last_error;
+  diagnostics->sensor_write_retries = sensor_write_retries;
+  diagnostics->sensor_write_failures = sensor_write_failures;
+}
+
+void CameraPipeline_SetPipeAddress(uint32_t pipe, uint8_t *dst)
+{
+  const HAL_StatusTypeDef ret = HAL_DCMIPP_PIPE_SetMemoryAddress(
+      CMW_CAMERA_GetDCMIPPHandle(), pipe, DCMIPP_MEMORY_ADDRESS_0, (uint32_t)dst);
+  assert(ret == HAL_OK);
+}
+
+/**
+  * @brief  Vsync event callback
+  * @param  pipe DCMIPP pipe starting a new frame
+  * @retval None
+  */
+int CMW_CAMERA_PIPE_VsyncEventCallback(uint32_t pipe)
+{
+  switch (pipe)
+  {
+    case DCMIPP_PIPE1 :
+    case DCMIPP_PIPE2 :
+      FaceDetection_CameraVsyncCallback(pipe);
+      break;
+  }
+  return 0;
 }
 
 /**

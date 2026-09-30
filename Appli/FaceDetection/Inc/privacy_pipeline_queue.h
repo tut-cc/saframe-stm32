@@ -10,19 +10,32 @@
 extern "C" {
 #endif
 
-#define PRIVACY_RESULT_QUEUE_CAPACITY (3U)
+#define PRIVACY_RESULT_QUEUE_CAPACITY (4U)
 #define PRIVACY_CAPTURE_QUEUE_CAPACITY (3U)
-#define PRIVACY_BACKGROUND_BUFFER_COUNT (4U)
-#define PRIVACY_NN_BUFFER_COUNT (2U)
+#define PRIVACY_BACKGROUND_BUFFER_COUNT (5U)
+#define PRIVACY_NN_BUFFER_COUNT (3U)
+
+/* Continuous capture does not wait for downstream stages, so each queue must
+ * hold every buffer that can reach it: a captured job keeps its NN buffer until
+ * the inference stage pops it, and a processed result keeps its background
+ * buffer, of which one is always displayed. */
+_Static_assert(PRIVACY_CAPTURE_QUEUE_CAPACITY >= PRIVACY_NN_BUFFER_COUNT,
+               "capture queue must hold every NN buffer");
+_Static_assert(PRIVACY_RESULT_QUEUE_CAPACITY >= PRIVACY_BACKGROUND_BUFFER_COUNT - 1U,
+               "result queue must hold every non-displayed background buffer");
 
 typedef struct
 {
   uint32_t frame_number;
   uint32_t rgb_buffer_index;
   uint32_t nn_buffer_index;
+  /* Frame-end interrupt of the previous captured frame. */
   uint32_t capture_started_cycles;
+  /* Frame-end interrupt of the second pipe; the ADR-0006 deadline origin. */
   uint32_t capture_completed_cycles;
   uint32_t capture_us;
+  /* From capture_completed_cycles until the capture task took the frame. */
+  uint32_t capture_lag_us;
 } PrivacyCaptureJob;
 
 typedef struct
@@ -84,12 +97,15 @@ bool PrivacyBufferPool_MarkProcessed(PrivacyBufferPool *pool, uint32_t buffer_in
 bool PrivacyBufferPool_Publish(PrivacyBufferPool *pool, uint32_t buffer_index,
                                uint32_t *released_index);
 bool PrivacyBufferPool_Drop(PrivacyBufferPool *pool, uint32_t buffer_index);
+/* Return a CAPTURING buffer whose camera frame was discarded. */
+bool PrivacyBufferPool_Cancel(PrivacyBufferPool *pool, uint32_t buffer_index);
 PrivacyFrameState PrivacyBufferPool_State(const PrivacyBufferPool *pool,
                                           uint32_t buffer_index);
 void PrivacyNnBufferPool_Init(PrivacyNnBufferPool *pool);
 bool PrivacyNnBufferPool_Acquire(PrivacyNnBufferPool *pool, uint32_t *buffer_index);
 bool PrivacyNnBufferPool_MarkCopying(PrivacyNnBufferPool *pool, uint32_t buffer_index);
 bool PrivacyNnBufferPool_Release(PrivacyNnBufferPool *pool, uint32_t buffer_index);
+bool PrivacyNnBufferPool_Cancel(PrivacyNnBufferPool *pool, uint32_t buffer_index);
 
 #ifdef __cplusplus
 }
