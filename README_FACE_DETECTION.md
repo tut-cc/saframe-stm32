@@ -78,6 +78,16 @@ cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
 ASAN_OPTIONS=detect_leaks=0 /tmp/privacy_filter_test
 ```
 
+連続撮影のバッファ切り替えとPipe 1/Pipe 2の組み合わせも同様に試験できます。
+
+```bash
+cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
+  -IAppli/FaceDetection/Inc tests/camera_capture_stream_test.c \
+  Appli/FaceDetection/Src/camera_capture_stream.c \
+  Appli/FaceDetection/Src/privacy_filter.c -o /tmp/camera_capture_stream_test
+ASAN_OPTIONS=detect_leaks=0 /tmp/camera_capture_stream_test
+```
+
 ## 現段階の制約
 
 - 出力先はLCDのみです。USB UVCや録画出力は未実装です。

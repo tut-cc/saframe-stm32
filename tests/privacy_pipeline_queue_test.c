@@ -74,7 +74,10 @@ static void test_buffer_pool_state_transitions(void)
   assert(PrivacyBufferPool_Acquire(&pool, &first));
   assert(PrivacyBufferPool_Acquire(&pool, &second));
   assert(first != second);
-  assert(PrivacyBufferPool_Acquire(&pool, &released));
+  for (uint32_t i = 2U; i < PRIVACY_BACKGROUND_BUFFER_COUNT - 1U; i++)
+  {
+    assert(PrivacyBufferPool_Acquire(&pool, &released));
+  }
   assert(!PrivacyBufferPool_Acquire(&pool, &released));
   assert(PrivacyBufferPool_MarkCaptured(&pool, first));
   assert(PrivacyBufferPool_MarkInference(&pool, first));
@@ -104,6 +107,10 @@ static void test_capture_queue_and_nn_pool(void)
   assert(PrivacyNnBufferPool_Acquire(&nn_pool, &nn0));
   assert(PrivacyNnBufferPool_Acquire(&nn_pool, &nn1));
   assert(nn0 != nn1);
+  for (uint32_t i = 2U; i < PRIVACY_NN_BUFFER_COUNT; i++)
+  {
+    assert(PrivacyNnBufferPool_Acquire(&nn_pool, &job.nn_buffer_index));
+  }
   assert(!PrivacyNnBufferPool_Acquire(&nn_pool, &job.nn_buffer_index));
   assert(PrivacyNnBufferPool_MarkCopying(&nn_pool, nn0));
   assert(PrivacyNnBufferPool_Release(&nn_pool, nn0));
@@ -129,12 +136,44 @@ static void test_capture_queue_and_nn_pool(void)
   assert(!PrivacyCaptureQueue_Pop(&queue, &job));
 }
 
+static void test_cancel_discarded_capture(void)
+{
+  PrivacyBufferPool pool;
+  PrivacyNnBufferPool nn_pool;
+  uint32_t rgb;
+  uint32_t nn;
+  PrivacyBufferPool_Init(&pool);
+  PrivacyNnBufferPool_Init(&nn_pool);
+
+  /* Continuous capture keeps two buffers per pipe in flight (being written
+   * and queued for the next frame) besides the displayed and processed ones. */
+  assert(PRIVACY_BACKGROUND_BUFFER_COUNT >= 4U);
+  assert(PRIVACY_NN_BUFFER_COUNT >= 3U);
+
+  assert(PrivacyBufferPool_Acquire(&pool, &rgb));
+  assert(PrivacyBufferPool_Cancel(&pool, rgb));
+  assert(PrivacyBufferPool_State(&pool, rgb) == PRIVACY_FRAME_FREE);
+  assert(!PrivacyBufferPool_Cancel(&pool, rgb));
+  assert(!PrivacyBufferPool_Cancel(&pool, pool.displayed_index));
+  assert(PrivacyBufferPool_Acquire(&pool, &rgb));
+  assert(PrivacyBufferPool_MarkCaptured(&pool, rgb));
+  assert(!PrivacyBufferPool_Cancel(&pool, rgb));
+
+  assert(PrivacyNnBufferPool_Acquire(&nn_pool, &nn));
+  assert(PrivacyNnBufferPool_Cancel(&nn_pool, nn));
+  assert(!PrivacyNnBufferPool_Cancel(&nn_pool, nn));
+  assert(PrivacyNnBufferPool_Acquire(&nn_pool, &nn));
+  assert(PrivacyNnBufferPool_MarkCopying(&nn_pool, nn));
+  assert(!PrivacyNnBufferPool_Cancel(&nn_pool, nn));
+}
+
 int main(void)
 {
   test_empty_full_and_fifo_order();
   test_wraparound();
   test_buffer_pool_state_transitions();
   test_capture_queue_and_nn_pool();
+  test_cancel_discarded_capture();
   puts("privacy_pipeline_queue_test: PASS");
   return 0;
 }

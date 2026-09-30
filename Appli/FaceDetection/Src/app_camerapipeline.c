@@ -166,6 +166,30 @@ void CameraPipeline_IspUpdate(void)
   assert(ret == CMW_ERROR_NONE);
 }
 
+void CameraPipeline_SetPipeAddress(uint32_t pipe, uint8_t *dst)
+{
+  const HAL_StatusTypeDef ret = HAL_DCMIPP_PIPE_SetMemoryAddress(
+      CMW_CAMERA_GetDCMIPPHandle(), pipe, DCMIPP_MEMORY_ADDRESS_0, (uint32_t)dst);
+  assert(ret == HAL_OK);
+}
+
+/**
+  * @brief  Vsync event callback
+  * @param  pipe DCMIPP pipe starting a new frame
+  * @retval None
+  */
+int CMW_CAMERA_PIPE_VsyncEventCallback(uint32_t pipe)
+{
+  switch (pipe)
+  {
+    case DCMIPP_PIPE1 :
+    case DCMIPP_PIPE2 :
+      FaceDetection_CameraVsyncCallback(pipe);
+      break;
+  }
+  return 0;
+}
+
 /**
   * @brief  Frame event callback
   * @param  hdcmipp pointer to the DCMIPP handle

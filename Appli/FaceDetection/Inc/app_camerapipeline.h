@@ -28,5 +28,7 @@ void CameraPipeline_DisplayPipe_Start(uint8_t *display_pipe_dst, uint32_t cam_mo
 void CameraPipeline_DisplayPipe_Stop(void);
 void CameraPipeline_NNPipe_Start(uint8_t *nn_pipe_dst, uint32_t cam_mode);
 void CameraPipeline_IspUpdate(void);
+/* Program the destination latched at the next frame start of a running pipe. */
+void CameraPipeline_SetPipeAddress(uint32_t pipe, uint8_t *dst);
 
 #endif

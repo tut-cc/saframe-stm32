@@ -13,8 +13,10 @@ void FaceDetection_OSStarted(void);
 void FaceDetection_Run(void);
 #define DISPLAY_FRAME_READY  (1U << 0)
 #define NN_FRAME_READY       (1U << 1)
+#define CAPTURE_FRAME_ENDED  (1U << 2)
 
 void FaceDetection_CameraFrameCallback(uint32_t pipe);
+void FaceDetection_CameraVsyncCallback(uint32_t pipe);
 
 #ifdef __cplusplus
 }
