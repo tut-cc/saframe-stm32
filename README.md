@@ -8,47 +8,48 @@ TRON プログラミングコンテスト 2026、RTOS アプリケーション�
 ## リリース
 
 ビルド済みイメージは [GitHub Releases](https://github.com/tut-cc/saframe-stm32/releases) から
-`saframe-v1.0.zip` をダウンロードしてください。ソースコードは同じバージョンの
-[`v1.0` タグ](https://github.com/tut-cc/saframe-stm32/tree/v1.0) に固定されています。
+`saframe-v1.1.zip` をダウンロードしてください。ソースコードは同じバージョンの
+[`v1.1` タグ](https://github.com/tut-cc/saframe-stm32/tree/v1.1) に固定されています。
+
+v1.1 のイメージは flash-boot 用です。flash-boot は、外部 NOR フラッシュに書き込んだイメージから、
+デバッガなしで電源を入れるだけで起動する方法です。STM32CubeIDE は要らず、STM32CubeProgrammer だけで書き込めます。
 
 ZIPには次のファイルが入っています。
 
-| ファイル | 用途 |
-| --- | --- |
-| `mtk3bsp2_stm32n657_Appli.elf` / `.bin` | μT-KernelとSaframe本体を含むAppli |
-| `mtk3bsp2_stm32n657_FSBL.elf` / `.bin` | dev-boot用のFSBL |
-| `network_data.hex` | STM32CubeProgrammerで外部NORへ書き込むモデル重み |
-| `network_data.xSPI2.bin` | モデル重みの生バイナリ |
+| ファイル | 用途 | 書き込み先アドレス |
+| --- | --- | --- |
+| `FSBL-trusted.bin` | 署名済みのFSBL。ボード起動時に最初に動くブートローダ | `0x70000000` |
+| `Appli-trusted.bin` | 署名済みのAppli。μT-KernelとSaframe本体を含む | `0x70100000` |
+| `network_data.hex` | モデルの重み | 指定不要。ファイル内にアドレスが含まれている |
 
-### v1.0を書き込んで起動する
-
-このリリースはDevelopment modeで使うdev-boot専用です。flash-boot用の署名済み
-イメージではありません。flash-bootで起動したい場合は、ソースからビルドして
-「Flash boot で起動する」の手順を使ってください。
+### v1.1を書き込んで起動する
 
 1. ボードをDevelopment modeにして、ST-LINK USBをパソコンへ接続します。
-2. ZIPを展開し、モデル重みを外部NORへ書き込みます。`STM32N6_LOADER`は
+   Development modeはBOOT0をLOW、BOOT1をHIGHにした状態です。
+2. ZIPを展開したディレクトリで、3つのファイルを外部NORへ書き込みます。`STM32N6_LOADER`は
    STM32CubeProgrammerに付属する外部ローダーの実際のパスへ置き換えてください。
 
    ```bash
    export STM32N6_LOADER="<STM32CubeProgrammer>/bin/ExternalLoader/MX66UW1G45G_STM32N6570-DK.stldr"
-   STM32_Programmer_CLI -c port=SWD freq=1000 mode=UR reset=HWrst -el "$STM32N6_LOADER" \
-     -w network_data.hex -hardRst
+   STM32_Programmer_CLI -c port=SWD freq=1000 mode=UR reset=HWrst -el "$STM32N6_LOADER"      -w FSBL-trusted.bin 0x70000000 -w Appli-trusted.bin 0x70100000      -w network_data.hex -hardRst
    ```
 
-   SWDを高速にしたり`mode=HOTPLUG`で接続したりすると、書き込み中にST-LINKのUSB通信が
-   止まる環境がありました。書き込みが終わったら、ST-LINKのUSBケーブルを抜き差しして
-   ボードの電源を入れ直してください。入れ直さずに起動すると外部NORを初期化できず、
-   モデル重みを読む時点でBusFaultになります。
+   STM32CubeProgrammerの画面から書き込む場合は、External loadersで
+   `MX66UW1G45G_STM32N6570-DK`を選び、Erasing & Programmingで上の表のアドレスへ
+   1つずつ書き込みます。
 
-3. `v1.0`タグのソースをSTM32CubeIDEへインポートし、展開したAppli/FSBLの
-   `.elf`をそれぞれ`Appli/Debug/`と`FSBL/Debug/`へ置きます。
-4. `Appli/mtk3bsp2_stm32n657_Appli Debug.launch`を開始します。このlaunch構成が
-   FSBLとAppliを内部SRAMへロードしてFSBLから起動します。
-5. `usermain`で停止したら実行を再開します。T-Monitorコンソールは
+   SWDを高速にしたり`mode=HOTPLUG`で接続したりすると、書き込み中にST-LINKのUSB通信が
+   止まる環境がありました。
+
+3. BOOT0とBOOT1をどちらもLOWにします。これがflash-bootの設定です。
+4. ST-LINKのUSBケーブルを抜き差しして、ボードの電源を入れ直します。
+   液晶画面にカメラの映像が出れば起動しています。T-Monitorコンソールは
    115200 bps、8-N-1です。
 
-ソースから再ビルドする場合は、次の「ビルドと実行」の手順を使ってください。
+デバッガから起動するdev-boot用のイメージは、
+[v1.0のリリース](https://github.com/tut-cc/saframe-stm32/releases/tag/v1.0)にあります。
+手順は[v1.0のREADME](https://github.com/tut-cc/saframe-stm32/blob/v1.0/README.md#v10を書き込んで起動する)を参照してください。
+ソースから再ビルドする場合は、次の「ビルドと実行」と「Flash boot で起動する」の手順を使ってください。
 
 ## 特長
 
