@@ -31,7 +31,9 @@ ZIPには次のファイルが入っています。
 
    ```bash
    export STM32N6_LOADER="<STM32CubeProgrammer>/bin/ExternalLoader/MX66UW1G45G_STM32N6570-DK.stldr"
-   STM32_Programmer_CLI -c port=SWD freq=1000 mode=UR reset=HWrst -el "$STM32N6_LOADER"      -w FSBL-trusted.bin 0x70000000 -w Appli-trusted.bin 0x70100000      -w network_data.hex -hardRst
+   STM32_Programmer_CLI -c port=SWD freq=1000 mode=UR reset=HWrst -el "$STM32N6_LOADER" \
+     -w FSBL-trusted.bin 0x70000000 -w Appli-trusted.bin 0x70100000 \
+     -w network_data.hex -hardRst
    ```
 
    STM32CubeProgrammerの画面から書き込む場合は、External loadersで
